@@ -1,0 +1,213 @@
+.kamil-wizard {
+	max-width: 860px;
+	margin: 0 auto;
+	padding: 8px 4px 40px;
+}
+
+/* stepper */
+.kamil-wizard .kw-steps {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 8px 0 20px;
+}
+.kamil-wizard .kw-step {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	opacity: 0.55;
+}
+.kamil-wizard .kw-step.active,
+.kamil-wizard .kw-step.done {
+	opacity: 1;
+}
+.kamil-wizard .kw-num {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	height: 26px;
+	border-radius: 50%;
+	background: var(--control-bg);
+	border: 1px solid var(--border-color);
+	font-size: 12px;
+	font-weight: 600;
+}
+.kamil-wizard .kw-step.active .kw-num {
+	background: var(--primary);
+	color: #fff;
+	border-color: var(--primary);
+}
+.kamil-wizard .kw-step.done .kw-num {
+	background: var(--green-500, #28a745);
+	color: #fff;
+	border-color: var(--green-500, #28a745);
+}
+.kamil-wizard .kw-label {
+	font-size: 13px;
+	font-weight: 500;
+}
+.kamil-wizard .kw-bar {
+	flex: 1;
+	height: 2px;
+	background: var(--border-color);
+}
+
+/* card */
+.kamil-wizard .kw-card {
+	background: var(--card-bg, var(--fg-color));
+	border: 1px solid var(--border-color);
+	border-radius: var(--border-radius-lg, 10px);
+	padding: 18px 20px;
+	box-shadow: var(--shadow-sm);
+}
+.kamil-wizard .kw-section-title {
+	font-size: 12px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.4px;
+	color: var(--text-muted);
+	margin: 18px 0 10px;
+	padding-bottom: 4px;
+	border-bottom: 1px solid var(--border-color);
+}
+.kamil-wizard .kw-section-title:first-child {
+	margin-top: 0;
+}
+.kamil-wizard .kw-field-grid {
+	display: grid;
+	grid-template-columns: repeat(2, 1fr);
+	gap: 8px 16px;
+}
+.kamil-wizard .kw-cell.full {
+	grid-column: 1 / -1;
+}
+.kamil-wizard .frappe-control {
+	margin-bottom: 0;
+}
+
+/* items grid */
+.kamil-wizard .kw-item-head,
+.kamil-wizard .kw-item-row,
+.kamil-wizard .kw-total-row {
+	display: grid;
+	grid-template-columns: 1fr 110px 130px 130px 30px;
+	gap: 8px;
+	align-items: center;
+}
+.kamil-wizard .kw-item-head {
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.3px;
+	color: var(--text-muted);
+	padding: 0 2px 6px;
+}
+.kamil-wizard .kw-item-head .num {
+	text-align: right;
+}
+.kamil-wizard .kw-item-row {
+	padding: 4px 0;
+}
+.kamil-wizard .kw-amount {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+	padding-right: 4px;
+}
+.kamil-wizard .kw-remove {
+	cursor: pointer;
+	color: var(--text-muted);
+	font-size: 18px;
+	line-height: 1;
+	display: inline-block;
+	text-align: center;
+	width: 100%;
+}
+.kamil-wizard .kw-remove:hover {
+	color: var(--red-500, #e24c4c);
+}
+.kamil-wizard .kw-total-row {
+	border-top: 1px solid var(--border-color);
+	margin-top: 6px;
+	padding-top: 8px;
+	font-weight: 600;
+}
+.kamil-wizard .kw-total-row > div:first-child {
+	grid-column: 1 / 4;
+}
+.kamil-wizard .kw-total-val {
+	grid-column: 4 / 5;
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+}
+.kamil-wizard .kw-add-item {
+	margin-top: 10px;
+}
+
+/* footer */
+.kamil-wizard .kw-footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	margin-top: 18px;
+}
+
+/* step 2 */
+.kamil-wizard .kw-order-banner {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	background: var(--bg-green, rgba(40, 167, 69, 0.1));
+	border: 1px solid var(--green-300, rgba(40, 167, 69, 0.3));
+	border-radius: 8px;
+	padding: 12px 14px;
+	margin-bottom: 16px;
+}
+.kamil-wizard .kw-check,
+.kamil-wizard .kw-done-check {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	border-radius: 50%;
+	background: var(--green-500, #28a745);
+	color: #fff;
+	font-weight: 700;
+	flex-shrink: 0;
+}
+.kamil-wizard .kw-order-name {
+	font-weight: 600;
+}
+.kamil-wizard .kw-order-sub {
+	font-size: 12px;
+	color: var(--text-muted);
+}
+.kamil-wizard .kw-summary table {
+	margin-bottom: 16px;
+}
+.kamil-wizard .kw-summary .num {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+}
+
+/* done */
+.kamil-wizard .kw-done {
+	text-align: center;
+	padding: 32px 20px;
+}
+.kamil-wizard .kw-done-check {
+	width: 48px;
+	height: 48px;
+	font-size: 24px;
+	margin: 0 auto 12px;
+}
+.kamil-wizard .kw-done-links {
+	display: flex;
+	justify-content: center;
+	gap: 10px;
+	margin: 16px 0;
+}
+.kamil-wizard .kw-done-total {
+	color: var(--text-muted);
+	margin-bottom: 20px;
+}
