@@ -79,7 +79,7 @@ def _add_items(doc, items, warehouse_field, date_field, fallback_warehouse, fall
 
 
 @frappe.whitelist()
-def create_purchase_order(order):
+def create_purchase_order(order: dict | str) -> dict:
 	"""Step 1 (Purchase): create and submit a Purchase Order."""
 	order = _load(order)
 
@@ -107,7 +107,7 @@ def create_purchase_order(order):
 
 
 @frappe.whitelist()
-def create_purchase_invoice(purchase_order, receipt=None):
+def create_purchase_invoice(purchase_order: str, receipt: dict | str | None = None) -> dict:
 	"""Step 2 (Purchase): create and submit a stock-updating Purchase Invoice."""
 	from erpnext.buying.doctype.purchase_order.purchase_order import make_purchase_invoice
 
@@ -145,7 +145,7 @@ def create_purchase_invoice(purchase_order, receipt=None):
 
 
 @frappe.whitelist()
-def create_sales_order(order):
+def create_sales_order(order: dict | str) -> dict:
 	"""Step 1 (Sales): create and submit a Sales Order."""
 	order = _load(order)
 
@@ -173,7 +173,7 @@ def create_sales_order(order):
 
 
 @frappe.whitelist()
-def create_sales_invoice(sales_order, delivery=None):
+def create_sales_invoice(sales_order: str, delivery: dict | str | None = None) -> dict:
 	"""Step 2 (Sales): create and submit a stock-updating Sales Invoice."""
 	from erpnext.selling.doctype.sales_order.sales_order import make_sales_invoice
 
@@ -237,4 +237,160 @@ def _invoice_summary(inv):
 		"currency": inv.currency,
 		"grand_total": inv.grand_total,
 		"outstanding_amount": inv.outstanding_amount,
+	}
+
+
+# ---------------------------------------------------------------------------
+# Kamil Hub dashboard
+# ---------------------------------------------------------------------------
+
+
+def _can_read(doctype):
+	return frappe.has_permission(doctype, "read")
+
+
+def _sum_where(doctype, sum_field, where, params):
+	rows = frappe.db.sql(f"select coalesce(sum({sum_field}), 0) from `tab{doctype}` where {where}", params)
+	return flt(rows[0][0]) if rows else 0.0
+
+
+def _company_clause(company):
+	return (" and company = %(company)s" if company else ""), {"company": company}
+
+
+def _invoice_total_mtd(doctype, company):
+	if not _can_read(doctype):
+		return None
+	clause, params = _company_clause(company)
+	params["start"] = frappe.utils.get_first_day(nowdate())
+	return _sum_where(
+		doctype,
+		"base_grand_total",
+		"docstatus = 1 and is_return = 0 and posting_date >= %(start)s" + clause,
+		params,
+	)
+
+
+def _invoice_outstanding(doctype, company):
+	if not _can_read(doctype):
+		return None
+	clause, params = _company_clause(company)
+	return _sum_where(doctype, "outstanding_amount", "docstatus = 1 and outstanding_amount > 0" + clause, params)
+
+
+def _monthly_invoice_totals(doctype, company, start):
+	if not _can_read(doctype):
+		return {}
+	clause, params = _company_clause(company)
+	params["start"] = start
+	rows = frappe.db.sql(
+		f"""select date_format(posting_date, '%%Y-%%m') as ym, sum(base_grand_total) as total
+		from `tab{doctype}`
+		where docstatus = 1 and is_return = 0 and posting_date >= %(start)s{clause}
+		group by ym""",
+		params,
+		as_dict=True,
+	)
+	return {r.ym: flt(r.total) for r in rows}
+
+
+def _count(doctype, filters):
+	if not _can_read(doctype):
+		return None
+	try:
+		return frappe.db.count(doctype, filters)
+	except Exception:
+		return None
+
+
+def _recent_invoices(doctype, party_field, company):
+	if not _can_read(doctype):
+		return []
+	filters = {"company": company} if company else {}
+	return frappe.get_list(
+		doctype,
+		filters=filters,
+		fields=["name", f"{party_field} as party", "status", "grand_total", "currency", "posting_date", "docstatus"],
+		order_by="modified desc",
+		limit_page_length=6,
+	)
+
+
+@frappe.whitelist()
+def get_hub_data(company: str | None = None) -> dict:
+	"""Aggregate KPIs, monthly totals, shortcut counts and recent documents
+	for the Kamil Hub page. Everything is permission-gated per DocType;
+	blocks the user cannot read come back as None/empty and the client
+	hides them."""
+	companies = frappe.get_list("Company", pluck="name", order_by="name")
+	if company and company not in companies:
+		company = None
+	if not company:
+		default = frappe.defaults.get_user_default("Company") or frappe.db.get_single_value(
+			"Global Defaults", "default_company"
+		)
+		company = default if default in companies else (companies[0] if len(companies) == 1 else None)
+
+	currency = (
+		frappe.get_cached_value("Company", company, "default_currency")
+		if company
+		else frappe.db.get_single_value("Global Defaults", "default_currency")
+	)
+
+	# last 6 months, oldest first
+	first_of_month = frappe.utils.get_first_day(nowdate())
+	months = []
+	for offset in range(5, -1, -1):
+		d = frappe.utils.add_months(first_of_month, -offset)
+		months.append({"key": d.strftime("%Y-%m"), "label": frappe.utils.formatdate(d, "MMM")})
+
+	purchases_by_month = _monthly_invoice_totals("Purchase Invoice", company, months[0]["key"] + "-01")
+	sales_by_month = _monthly_invoice_totals("Sales Invoice", company, months[0]["key"] + "-01")
+
+	return {
+		"company": company,
+		"companies": companies,
+		"currency": currency,
+		"kpis": {
+			"mtd_purchases": _invoice_total_mtd("Purchase Invoice", company),
+			"mtd_sales": _invoice_total_mtd("Sales Invoice", company),
+			"payables": _invoice_outstanding("Purchase Invoice", company),
+			"receivables": _invoice_outstanding("Sales Invoice", company),
+		},
+		"monthly": [
+			{
+				"label": m["label"],
+				"purchases": purchases_by_month.get(m["key"], 0.0),
+				"sales": sales_by_month.get(m["key"], 0.0),
+			}
+			for m in months
+		],
+		"counts": {
+			"open_po": _count(
+				"Purchase Order",
+				{"docstatus": 1, "status": ["not in", ["Completed", "Closed"]], **({"company": company} if company else {})},
+			),
+			"unpaid_pinv": _count(
+				"Purchase Invoice",
+				{"docstatus": 1, "outstanding_amount": [">", 0], **({"company": company} if company else {})},
+			),
+			"supplier": _count("Supplier", {"disabled": 0}),
+			"open_so": _count(
+				"Sales Order",
+				{"docstatus": 1, "status": ["not in", ["Completed", "Closed"]], **({"company": company} if company else {})},
+			),
+			"unpaid_sinv": _count(
+				"Sales Invoice",
+				{"docstatus": 1, "outstanding_amount": [">", 0], **({"company": company} if company else {})},
+			),
+			"customer": _count("Customer", {"disabled": 0}),
+			"item": _count("Item", {"disabled": 0}),
+			"vehicle": _count("Vehicle", {}),
+			"warehouse": _count("Warehouse", {"is_group": 0, **({"company": company} if company else {})}),
+			"payment_entry": _count(
+				"Payment Entry", {"docstatus": 1, **({"company": company} if company else {})}
+			),
+		},
+		"recent_purchases": _recent_invoices("Purchase Invoice", "supplier", company),
+		"recent_sales": _recent_invoices("Sales Invoice", "customer", company),
 	}

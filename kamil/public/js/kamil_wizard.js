@@ -198,11 +198,14 @@ kamil.wizard.KamilFlow = class KamilFlow {
 			.appendTo($card)
 			.on("click", () => this.add_item());
 
-		// footer
+		// footer - two paths: order only, or order + invoice/receipt
 		const $footer = $('<div class="kw-footer"></div>').appendTo(this.$stage);
-		$(`<button class="btn btn-primary btn-sm">${c.step1_cta} &rarr;</button>`)
+		$(`<button class="btn btn-default kw-btn">${c.order_only_cta}</button>`)
 			.appendTo($footer)
-			.on("click", () => this.submit_order());
+			.on("click", () => this.submit_order("order"));
+		$(`<button class="btn btn-primary kw-btn">${c.continue_cta} &rarr;</button>`)
+			.appendTo($footer)
+			.on("click", () => this.submit_order("invoice"));
 
 		if (!this.items.length) this.add_item();
 	}
@@ -221,9 +224,9 @@ kamil.wizard.KamilFlow = class KamilFlow {
 	render_item_row(row, idx) {
 		const $row = $('<div class="kw-item-row"></div>').appendTo(this.$items);
 		const $item = $('<div class="kw-cell-item"></div>').appendTo($row);
-		const $qty = $('<div class="kw-cell-num"></div>').appendTo($row);
-		const $rate = $('<div class="kw-cell-num"></div>').appendTo($row);
-		const $amt = $('<div class="kw-cell-num kw-amount">0.00</div>').appendTo($row);
+		const $qty = $(`<div class="kw-cell-num kw-cell-qty" data-label="${__("Qty")}"></div>`).appendTo($row);
+		const $rate = $(`<div class="kw-cell-num kw-cell-rate" data-label="${__("Rate")}"></div>`).appendTo($row);
+		const $amt = $(`<div class="kw-cell-num kw-amount" data-label="${__("Amount")}">0.00</div>`).appendTo($row);
 		const $del = $('<div class="kw-cell-del"><span class="kw-remove">&times;</span></div>').appendTo($row);
 
 		const item_ctrl = frappe.ui.form.make_control({
@@ -314,7 +317,7 @@ kamil.wizard.KamilFlow = class KamilFlow {
 		return null;
 	}
 
-	submit_order() {
+	submit_order(mode) {
 		const err = this.validate_step1();
 		if (err) {
 			frappe.msgprint({ title: __("Incomplete"), message: err, indicator: "orange" });
@@ -339,9 +342,42 @@ kamil.wizard.KamilFlow = class KamilFlow {
 			.then((r) => {
 				this.order = r.message;
 				frappe.show_alert({ message: __("{0} {1} created", [c.order_doctype, this.order.name]), indicator: "green" });
-				this.goto_step(2);
+				if (mode === "invoice") {
+					this.goto_step(2);
+				} else {
+					this.render_order_done();
+				}
 			})
 			.always(() => frappe.dom.unfreeze());
+	}
+
+	// Success screen for the "order only" path. Still offers a one-click
+	// route to raise the invoice/receipt afterwards.
+	render_order_done() {
+		const c = this.cfg;
+		const o = this.order;
+		this.set_stepper(2);
+		this.$stage.empty();
+		const $card = $('<div class="kw-card kw-done"></div>').appendTo(this.$stage);
+		$card.html(`
+			<div class="kw-done-check">&#10003;</div>
+			<h3>${c.order_done_title}</h3>
+			<p class="text-muted">${c.order_done_sub}</p>
+			<div class="kw-done-total">${o.doctype}: <b>${format_currency(o.grand_total, o.currency)}</b></div>
+			<div class="kw-done-links">
+				<a class="btn btn-default kw-btn" href="/app/${frappe.router.slug(c.order_doctype)}/${encodeURIComponent(o.name)}" target="_blank">${__("Open")} ${o.name}</a>
+				<button class="btn btn-primary kw-btn kw-proceed">${c.proceed_cta} &rarr;</button>
+			</div>
+			<button class="btn btn-link btn-sm kw-restart">${c.restart_cta}</button>
+		`);
+		$card.find(".kw-proceed").on("click", () => this.goto_step(2));
+		$card.find(".kw-restart").on("click", () => this.restart());
+	}
+
+	restart() {
+		this.items = [];
+		this.order = null;
+		this.goto_step(1);
 	}
 
 	// ---- step 2 : invoice ------------------------------------------------
@@ -390,10 +426,10 @@ kamil.wizard.KamilFlow = class KamilFlow {
 		$card.append(this.field_group(fields));
 
 		const $footer = $('<div class="kw-footer"></div>').appendTo(this.$stage);
-		$(`<button class="btn btn-default btn-sm kw-back">&larr; ${__("Back")}</button>`)
+		$(`<button class="btn btn-default kw-btn">${c.skip_invoice_cta}</button>`)
 			.appendTo($footer)
-			.on("click", () => frappe.msgprint(__("The {0} {1} is already submitted. Start a new entry to change items.", [c.order_doctype, o.name])));
-		$(`<button class="btn btn-primary btn-sm">${c.step2_cta}</button>`)
+			.on("click", () => this.render_order_done());
+		$(`<button class="btn btn-primary kw-btn">${c.step2_cta}</button>`)
 			.appendTo($footer)
 			.on("click", () => this.submit_invoice());
 	}
@@ -435,17 +471,13 @@ kamil.wizard.KamilFlow = class KamilFlow {
 			<div class="kw-done-check">&#10003;</div>
 			<h3>${c.done_title}</h3>
 			<p class="text-muted">${c.done_sub}</p>
-			<div class="kw-done-links">
-				<a class="btn btn-default btn-sm" href="/app/${frappe.router.slug(c.order_doctype)}/${encodeURIComponent(this.order.name)}" target="_blank">${this.order.name}</a>
-				<a class="btn btn-primary btn-sm" href="/app/${frappe.router.slug(c.invoice_doctype)}/${encodeURIComponent(inv.name)}" target="_blank">${inv.name}</a>
-			</div>
 			<div class="kw-done-total">${c.invoice_doctype}: <b>${format_currency(inv.grand_total, inv.currency)}</b></div>
-			<button class="btn btn-primary btn-sm kw-restart">${c.restart_cta}</button>
+			<div class="kw-done-links">
+				<a class="btn btn-default kw-btn" href="/app/${frappe.router.slug(c.order_doctype)}/${encodeURIComponent(this.order.name)}" target="_blank">${this.order.name}</a>
+				<a class="btn btn-primary kw-btn" href="/app/${frappe.router.slug(c.invoice_doctype)}/${encodeURIComponent(inv.name)}" target="_blank">${inv.name}</a>
+			</div>
+			<button class="btn btn-link btn-sm kw-restart">${c.restart_cta}</button>
 		`);
-		$card.find(".kw-restart").on("click", () => {
-			this.items = [];
-			this.order = null;
-			this.goto_step(1);
-		});
+		$card.find(".kw-restart").on("click", () => this.restart());
 	}
 };

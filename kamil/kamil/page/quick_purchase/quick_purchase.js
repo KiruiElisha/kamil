@@ -26,12 +26,20 @@ frappe.pages["quick-purchase"].on_page_load = function (wrapper) {
 
 					step1_label: __("Purchase Order"),
 					step2_label: __("Receive & Invoice"),
-					step1_cta: __("Create Purchase Order"),
+
+					// step 1 actions
+					order_only_cta: __("Submit Order Only"),
+					continue_cta: __("Submit & Receive"),
 
 					create_order_method: "kamil.api.create_purchase_order",
 					create_invoice_method: "kamil.api.create_purchase_invoice",
 					invoice_arg: "purchase_order",
 					invoice_payload_key: "receipt",
+
+					// order-only success screen
+					order_done_title: __("Purchase Order submitted"),
+					order_done_sub: __("The order is placed. Receive the goods and book the supplier invoice now, or later."),
+					proceed_cta: __("Receive & Invoice Now"),
 
 					step2_intro: __("Record the goods received and the supplier's invoice."),
 					step2_form_title: __("Receipt & Supplier Invoice"),
@@ -40,6 +48,7 @@ frappe.pages["quick-purchase"].on_page_load = function (wrapper) {
 						{ fieldname: "bill_date", label: __("Supplier Invoice Date"), fieldtype: "Date" },
 						{ fieldname: "custom_supplier_invoice", label: __("Supplier Invoice Copy"), fieldtype: "Attach", column_class: "full" },
 					],
+					skip_invoice_cta: __("Finish without Invoice"),
 					step2_cta: __("Receive & Create Invoice"),
 
 					done_title: __("Purchase completed"),
