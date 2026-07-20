@@ -1,7 +1,7 @@
 frappe.pages["kamil-hub"].on_page_load = function (wrapper) {
 	const page = frappe.ui.make_app_page({
 		parent: wrapper,
-		title: __("Kamil Hub"),
+		title: __("Kamil Energy"),
 		single_column: true,
 	});
 
@@ -235,6 +235,8 @@ class KamilHub {
 				title: __("Buying"),
 				items: [
 					{ label: __("New Purchase"), sub: __("2-step purchase & receive"), href: "/app/quick-purchase", icon: "cart", primary: "purchase" },
+					{ label: __("New Purchase Order"), sub: __("Standard order"), href: "/app/purchase-order/new", icon: "plus" },
+					{ label: __("New Purchase Invoice"), sub: __("Standard invoice"), href: "/app/purchase-invoice/new", icon: "plus" },
 					{ label: __("Purchase Orders"), href: "/app/purchase-order", icon: "clipboard", count: c.open_po, badge: __("open") },
 					{ label: __("Purchase Invoices"), href: "/app/purchase-invoice", icon: "file", count: c.unpaid_pinv, badge: __("unpaid") },
 					{ label: __("Suppliers"), href: "/app/supplier", icon: "users", count: c.supplier },
@@ -245,6 +247,8 @@ class KamilHub {
 				title: __("Selling"),
 				items: [
 					{ label: __("New Sale"), sub: __("2-step sell & deliver"), href: "/app/quick-sales", icon: "tag", primary: "sale" },
+					{ label: __("New Sales Order"), sub: __("Standard order"), href: "/app/sales-order/new", icon: "plus" },
+					{ label: __("New Sales Invoice"), sub: __("Standard invoice"), href: "/app/sales-invoice/new", icon: "plus" },
 					{ label: __("Sales Orders"), href: "/app/sales-order", icon: "clipboard", count: c.open_so, badge: __("open") },
 					{ label: __("Sales Invoices"), href: "/app/sales-invoice", icon: "file", count: c.unpaid_sinv, badge: __("unpaid") },
 					{ label: __("Customers"), href: "/app/customer", icon: "users", count: c.customer },
