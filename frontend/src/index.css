@@ -1,0 +1,6 @@
+@import 'frappe-ui/style.css';
+
+/* Slightly narrower app sidebar (default frappe-ui width is w-60 / 15rem) */
+.bg-surface-menu-bar.w-60 {
+  width: 13.5rem;
+}

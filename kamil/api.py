@@ -271,6 +271,19 @@ def _invoice_total_mtd(doctype, company):
 	)
 
 
+def _invoice_total_since(doctype, company, start):
+	if not _can_read(doctype):
+		return None
+	clause, params = _company_clause(company)
+	params["start"] = start
+	return _sum_where(
+		doctype,
+		"base_grand_total",
+		"docstatus = 1 and is_return = 0 and posting_date >= %(start)s" + clause,
+		params,
+	)
+
+
 def _invoice_outstanding(doctype, company):
 	if not _can_read(doctype):
 		return None
@@ -356,6 +369,10 @@ def get_hub_data(company: str | None = None) -> dict:
 			"mtd_sales": _invoice_total_mtd("Sales Invoice", company),
 			"payables": _invoice_outstanding("Purchase Invoice", company),
 			"receivables": _invoice_outstanding("Sales Invoice", company),
+			"today_sales": _invoice_total_since("Sales Invoice", company, nowdate()),
+			"today_purchases": _invoice_total_since("Purchase Invoice", company, nowdate()),
+			"ytd_sales": _invoice_total_since("Sales Invoice", company, frappe.utils.get_year_start(nowdate())),
+			"ytd_purchases": _invoice_total_since("Purchase Invoice", company, frappe.utils.get_year_start(nowdate())),
 		},
 		"monthly": [
 			{
@@ -394,3 +411,157 @@ def get_hub_data(company: str | None = None) -> dict:
 		"recent_purchases": _recent_invoices("Purchase Invoice", "supplier", company),
 		"recent_sales": _recent_invoices("Sales Invoice", "customer", company),
 	}
+
+
+# ---------------------------------------------------------------------------
+# Quick-create helpers for the Kamil frontend (modals referencing existing docs)
+# ---------------------------------------------------------------------------
+
+
+@frappe.whitelist()
+def list_open_invoices(invoice_type: str):
+	"""Outstanding invoices for the 'Record Payment' modal."""
+	dt = "Sales Invoice" if invoice_type == "Sales" else "Purchase Invoice"
+	party_field = "customer_name" if dt == "Sales Invoice" else "supplier_name"
+	rows = frappe.get_list(
+		dt,
+		filters={"docstatus": 1, "outstanding_amount": [">", 0]},
+		fields=["name", f"{party_field} as party", "outstanding_amount", "currency"],
+		order_by="outstanding_amount desc",
+		limit_page_length=50,
+	)
+	return [
+		{
+			"value": r.name,
+			"label": f"{r.name} · {r.party or ''} · {frappe.utils.fmt_money(r.outstanding_amount, currency=r.currency)}",
+			"outstanding": r.outstanding_amount,
+			"currency": r.currency,
+		}
+		for r in rows
+	]
+
+
+@frappe.whitelist()
+def list_open_orders(order_type: str):
+	"""Un-billed orders for the 'Invoice from Order' modal."""
+	dt = "Sales Order" if order_type == "Sales" else "Purchase Order"
+	party_field = "customer_name" if dt == "Sales Order" else "supplier_name"
+	rows = frappe.get_list(
+		dt,
+		filters={"docstatus": 1, "status": ["not in", ["Closed", "Completed"]], "per_billed": ["<", 100]},
+		fields=["name", f"{party_field} as party", "grand_total", "currency"],
+		order_by="transaction_date desc",
+		limit_page_length=50,
+	)
+	return [
+		{
+			"value": r.name,
+			"label": f"{r.name} · {r.party or ''} · {frappe.utils.fmt_money(r.grand_total, currency=r.currency)}",
+		}
+		for r in rows
+	]
+
+
+@frappe.whitelist()
+def list_modes_of_payment():
+	rows = frappe.get_list("Mode of Payment", filters={"enabled": 1}, pluck="name", order_by="name")
+	return [{"value": n, "label": n} for n in rows]
+
+
+@frappe.whitelist()
+def make_invoice_from_order(order_type: str, order_name: str):
+	"""Create a DRAFT invoice mapped from an existing order and return its name."""
+	if order_type == "Sales":
+		from erpnext.selling.doctype.sales_order.sales_order import make_sales_invoice
+
+		doc = make_sales_invoice(order_name)
+	else:
+		from erpnext.buying.doctype.purchase_order.purchase_order import make_purchase_invoice
+
+		doc = make_purchase_invoice(order_name)
+	doc.insert()
+	return {"name": doc.name, "doctype": doc.doctype}
+
+
+@frappe.whitelist()
+def record_payment(invoice_type: str, invoice_name: str, amount: float | str | None = None, mode_of_payment: str | None = None):
+	"""Create a DRAFT Payment Entry against an existing invoice and return its name."""
+	from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
+
+	dt = "Sales Invoice" if invoice_type == "Sales" else "Purchase Invoice"
+	pe = get_payment_entry(dt, invoice_name)
+	if mode_of_payment:
+		pe.mode_of_payment = mode_of_payment
+	if amount:
+		amount = flt(amount)
+		pe.paid_amount = amount
+		pe.received_amount = amount
+		if pe.references:
+			pe.references[0].allocated_amount = amount
+	pe.insert()
+	return {"name": pe.name, "doctype": pe.doctype}
+
+
+@frappe.whitelist()
+def search_link(doctype: str, txt: str = "", filters: str | dict | None = None):
+	"""Link-field search for the in-app create modals."""
+	txt = txt or ""
+	try:
+		filters = frappe.parse_json(filters) if isinstance(filters, str) else (filters or {})
+	except Exception:
+		filters = {}
+	if not isinstance(filters, dict):
+		filters = {}
+	meta = frappe.get_meta(doctype)
+	title_field = meta.title_field if meta.title_field and meta.title_field != "name" else None
+	or_filters = [["name", "like", f"%{txt}%"]]
+	if title_field:
+		or_filters.append([title_field, "like", f"%{txt}%"])
+	fields = ["name"] + ([title_field] if title_field else [])
+	rows = frappe.get_list(
+		doctype, filters=filters, or_filters=or_filters, fields=fields,
+		limit_page_length=15, order_by="modified desc",
+	)
+	out = []
+	for r in rows:
+		label = r.name
+		if title_field and r.get(title_field) and r.get(title_field) != r.name:
+			label = f"{r.name} · {r.get(title_field)}"
+		out.append({"value": r.name, "label": label})
+	return out
+
+
+@frappe.whitelist()
+def create_document(doctype: str, values: str | dict | None = None):
+	"""Insert a draft document (incl. child tables) from the create modal."""
+	values = frappe.parse_json(values) if isinstance(values, str) else (values or {})
+	values["doctype"] = doctype
+	meta = frappe.get_meta(doctype)
+	if not values.get("company") and meta.has_field("company"):
+		values["company"] = frappe.defaults.get_user_default("Company") or frappe.db.get_single_value(
+			"Global Defaults", "default_company"
+		)
+	doc = frappe.get_doc(values)
+	doc.insert()
+	return {"name": doc.name, "doctype": doc.doctype}
+
+
+@frappe.whitelist()
+def get_create_defaults() -> dict:
+	"""Preloaded defaults for the create modals (company, default warehouse)."""
+	company = frappe.defaults.get_user_default("Company") or frappe.db.get_single_value(
+		"Global Defaults", "default_company"
+	)
+	warehouse = frappe.db.get_value("Company", company, "default_warehouse") if company else None
+	return {
+		"company": company,
+		"warehouse": warehouse,
+	}
+
+
+@frappe.whitelist()
+def submit_document(doctype: str, name: str) -> dict:
+	"""Submit a draft document from the in-app viewer."""
+	doc = frappe.get_doc(doctype, name)
+	doc.submit()
+	return {"name": doc.name, "docstatus": doc.docstatus}

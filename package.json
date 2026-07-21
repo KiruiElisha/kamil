@@ -1,0 +1,9 @@
+{
+  "name": "kamil",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Kamil app root — builds the frappe-ui frontend during `bench build`.",
+  "scripts": {
+    "build": "cd frontend && npm ci && npm run build"
+  }
+}

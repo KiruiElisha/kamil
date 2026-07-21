@@ -53,3 +53,7 @@ jspm_packages/
 
 # Aider AI Chat
 .aider*
+
+# Generated frappe-ui frontend build outputs (produced by `bench build`)
+/kamil/public/frontend/
+/kamil/www/kamil.html
