@@ -19,31 +19,59 @@
         <!-- Child rows -->
         <div v-if="child && childRows.length" class="rounded-lg border border-outline-gray-1">
           <div class="border-b border-outline-gray-1 px-3 py-2 text-sm font-semibold text-ink-gray-8">{{ child.title }}</div>
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="border-b border-outline-gray-1 text-left text-xs text-ink-gray-5">
-                <th v-for="col in child.columns" :key="col.fieldname" class="px-3 py-1.5 font-medium">{{ col.label }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(r, i) in childRows" :key="i" class="border-b border-outline-gray-1 last:border-0">
-                <td v-for="col in child.columns" :key="col.fieldname" class="px-3 py-1.5 text-ink-gray-7">
-                  <span v-if="col.fieldtype === 'currency'" class="tabular-nums">{{ money(r[col.fieldname], doc[currencyField]) }}</span>
-                  <span v-else>{{ r[col.fieldname] }}</span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          <div class="overflow-x-auto">
+            <table class="w-full min-w-[420px] text-sm">
+              <thead>
+                <tr class="border-b border-outline-gray-1 text-left text-xs text-ink-gray-5">
+                  <th v-for="col in child.columns" :key="col.fieldname" class="px-3 py-1.5 font-medium">{{ col.label }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(r, i) in childRows" :key="i" class="border-b border-outline-gray-1 last:border-0">
+                  <td v-for="col in child.columns" :key="col.fieldname" class="px-3 py-1.5 text-ink-gray-7">
+                    <span v-if="col.fieldtype === 'currency'" class="tabular-nums">{{ money(r[col.fieldname], doc[currencyField]) }}</span>
+                    <span v-else>{{ r[col.fieldname] }}</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- WhatsApp panel -->
+        <div v-if="waOpen" class="space-y-3 rounded-lg border border-outline-gray-1 bg-surface-gray-1 p-3">
+          <div class="flex items-center gap-2 text-sm font-semibold text-ink-gray-8">
+            <MessageCircle class="h-4 w-4 text-green-600" /> Send via WhatsApp
+          </div>
+          <ComboField
+            v-if="senderOptions.length"
+            label="Send from"
+            :options="senderOptions"
+            :modelValue="waSender"
+            @update:modelValue="(v) => (waSender = v || '')"
+          />
+          <FormControl type="text" label="Phone (optional — auto-detected from party)" placeholder="+2547…" v-model="waPhone" />
+          <FormControl type="textarea" label="Message (optional)" v-model="waMessage" />
+          <div v-if="waResult" class="text-sm" :class="waOk ? 'text-green-600' : 'text-red-600'">{{ waResult }}</div>
+          <div class="flex justify-end gap-2">
+            <Button label="Cancel" @click="waOpen = false" />
+            <Button variant="solid" :loading="waSending" label="Send" @click="sendWhatsApp" />
+          </div>
         </div>
 
         <ErrorMessage :message="error" />
       </div>
     </template>
     <template #actions="{ close }">
-      <div class="flex w-full items-center justify-between gap-2">
-        <Button label="Open in ERPNext" @click="openDesk">
-          <template #prefix><ExternalLink class="h-4 w-4" /></template>
-        </Button>
+      <div class="flex w-full flex-wrap items-center justify-between gap-2">
+        <div class="flex gap-2">
+          <Button label="Open in ERPNext" @click="openDesk">
+            <template #prefix><ExternalLink class="h-4 w-4" /></template>
+          </Button>
+          <Button label="WhatsApp" @click="toggleWhatsApp">
+            <template #prefix><MessageCircle class="h-4 w-4 text-green-600" /></template>
+          </Button>
+        </div>
         <div class="flex gap-2">
           <Button label="Close" @click="close" />
           <Button v-if="canSubmit" variant="solid" label="Submit" :loading="submitting" @click="submit" />
@@ -55,8 +83,10 @@
 
 <script setup>
 import { ref, computed, watch } from 'vue'
-import { Dialog, Button, Badge, ErrorMessage, call } from 'frappe-ui'
+import { Dialog, Button, Badge, ErrorMessage, FormControl, call } from 'frappe-ui'
 import ExternalLink from '~icons/lucide/external-link'
+import MessageCircle from '~icons/lucide/message-circle'
+import ComboField from '@/components/ComboField.vue'
 
 const show = defineModel()
 const props = defineProps({
@@ -75,18 +105,34 @@ const loading = ref(false)
 const submitting = ref(false)
 const error = ref('')
 
+// WhatsApp state
+const waOpen = ref(false)
+const waPhone = ref('')
+const waMessage = ref('')
+const waSending = ref(false)
+const waResult = ref('')
+const waOk = ref(false)
+const senderOptions = ref([])
+const waSender = ref('')
+
 const childRows = computed(() => (doc.value && props.child ? doc.value[props.child.fieldname] || [] : []))
-const canSubmit = computed(
-  () => doc.value && doc.value.docstatus === 0 && !NON_SUBMITTABLE.includes(props.doctype),
-)
+const canSubmit = computed(() => doc.value && doc.value.docstatus === 0 && !NON_SUBMITTABLE.includes(props.doctype))
 
 async function load() {
   if (!props.name) return
   loading.value = true
   error.value = ''
   doc.value = null
+  waOpen.value = false
+  waResult.value = ''
   try {
     doc.value = await call('frappe.client.get', { doctype: props.doctype, name: props.name })
+    try {
+      senderOptions.value = (await call('kamil.api.list_whatsapp_senders')) || []
+      if (!waSender.value && senderOptions.value.length) waSender.value = senderOptions.value[0].value
+    } catch (e) {
+      senderOptions.value = []
+    }
   } catch (e) {
     error.value = e?.messages?.join(', ') || e?.message || 'Could not load document.'
   } finally {
@@ -114,6 +160,39 @@ async function submit() {
     error.value = e?.messages?.join(', ') || e?.message || 'Could not submit document.'
   } finally {
     submitting.value = false
+  }
+}
+
+async function toggleWhatsApp() {
+  waOpen.value = !waOpen.value
+  if (waOpen.value && !waPhone.value) {
+    try {
+      const p = await call('kamil.api.resolve_document_phone', { doctype: props.doctype, name: props.name })
+      if (p) waPhone.value = p
+    } catch (e) {
+      /* leave blank; backend still auto-resolves on send */
+    }
+  }
+}
+
+async function sendWhatsApp() {
+  waSending.value = true
+  waResult.value = ''
+  try {
+    const out = await call('kamil.api.send_document_whatsapp', {
+      doctype: props.doctype,
+      name: props.name,
+      phone_number: waPhone.value || null,
+      message: waMessage.value || null,
+      sender: waSender.value || null,
+    })
+    waOk.value = out?.success !== false
+    waResult.value = waOk.value ? 'Sent via WhatsApp ✓' : out?.error || 'Failed to send.'
+  } catch (e) {
+    waOk.value = false
+    waResult.value = e?.messages?.join(', ') || e?.message || 'Failed to send.'
+  } finally {
+    waSending.value = false
   }
 }
 

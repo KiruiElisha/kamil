@@ -565,3 +565,41 @@ def submit_document(doctype: str, name: str) -> dict:
 	doc = frappe.get_doc(doctype, name)
 	doc.submit()
 	return {"name": doc.name, "docstatus": doc.docstatus}
+
+
+@frappe.whitelist()
+def send_document_whatsapp(
+	doctype: str,
+	name: str,
+	phone_number: str | None = None,
+	message: str | None = None,
+	sender: str | None = None,
+) -> dict:
+	"""Send a document's PDF to its party via WhatsApp (whatsapp_integration app).
+	Phone auto-resolves from the document's party/contact when not provided."""
+	from whatsapp_integration.api.whatsapp.whatsapp import send_document_via_whatsapp
+
+	result = send_document_via_whatsapp(
+		doctype, name, phone_number=phone_number or None, message=message or None, sender=sender or None
+	)
+	return result or {"success": True}
+
+
+@frappe.whitelist()
+def list_whatsapp_senders() -> list:
+	"""WhatsApp sender numbers available to the current user (for the sender picker)."""
+	from whatsapp_integration.api.whatsapp.whatsapp import get_whatsapp_senders
+
+	rows = get_whatsapp_senders() or []
+	return [{"label": r.get("label") or r.get("value"), "value": r.get("value")} for r in rows]
+
+
+@frappe.whitelist()
+def resolve_document_phone(doctype: str, name: str) -> str | None:
+	"""Best-effort phone number for a document's party/contact (WhatsApp prefill)."""
+	try:
+		from whatsapp_integration.service.utils import resolve_phone_number
+
+		return resolve_phone_number(doctype, name) or None
+	except Exception:
+		return None

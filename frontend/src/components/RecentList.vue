@@ -27,7 +27,9 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import { Badge, ListView } from 'frappe-ui'
+import { useIsMobile } from '@/composables/useIsMobile'
 
 const props = defineProps({
   title: String,
@@ -35,12 +37,16 @@ const props = defineProps({
   rows: { type: Array, default: () => [] },
 })
 
-const cols = [
-  { label: 'Document', key: 'name', width: 2 },
-  { label: 'Party', key: 'party', width: 2 },
-  { label: 'Status', key: 'status', width: 1 },
-  { label: 'Total', key: 'grand_total', width: 1, align: 'right' },
-]
+const isMobile = useIsMobile()
+const cols = computed(() => {
+  const all = [
+    { label: 'Document', key: 'name', width: 2 },
+    { label: 'Party', key: 'party', width: 2 },
+    { label: 'Status', key: 'status', width: 1 },
+    { label: 'Total', key: 'grand_total', width: 1, align: 'right' },
+  ]
+  return isMobile.value ? all.filter((c) => c.key !== 'party') : all
+})
 
 function open(row) {
   window.location.href = `/app/${props.slug}/${encodeURIComponent(row.name)}`

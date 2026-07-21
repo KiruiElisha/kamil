@@ -1,5 +1,5 @@
 <template>
-  <div class="mx-auto max-w-6xl">
+  <div class="mx-auto flex w-full min-h-0 max-w-6xl flex-1 flex-col p-3 md:p-5">
     <DocTable v-if="cfg" :key="cfg.doctype" v-bind="tableProps" />
     <div v-else class="p-6 text-center text-sm text-ink-gray-5">Unknown list.</div>
   </div>

@@ -4,3 +4,12 @@
 .bg-surface-menu-bar.w-60 {
   width: 13.5rem;
 }
+
+/* Tap feedback on touch devices */
+@media (hover: none) {
+  button:active,
+  a:active,
+  [role='button']:active {
+    opacity: 0.7;
+  }
+}

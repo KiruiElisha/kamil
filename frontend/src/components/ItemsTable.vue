@@ -4,9 +4,9 @@
     <div
       v-for="(row, i) in rows"
       :key="i"
-      class="flex items-end gap-2 rounded-md border border-outline-gray-1 p-2"
+      class="flex flex-col gap-2 rounded-md border border-outline-gray-1 p-2 md:flex-row md:items-end"
     >
-      <div v-for="col in columns" :key="col.fieldname" class="min-w-0" :style="{ flex: col.flex || 1 }">
+      <div v-for="col in columns" :key="col.fieldname" class="w-full min-w-0 md:w-auto" :style="{ flex: col.flex || 1 }">
         <LinkField
           v-if="col.fieldtype === 'link'"
           :doctype="col.options"

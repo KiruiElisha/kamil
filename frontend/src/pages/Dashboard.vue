@@ -1,5 +1,16 @@
 <template>
-  <div class="mx-auto max-w-6xl space-y-5">
+  <div class="mx-auto w-full min-h-0 max-w-6xl flex-1 space-y-5 overflow-auto p-3 md:p-5">
+    <template v-if="loading">
+      <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        <Skeleton v-for="n in 10" :key="n" class="h-[86px]" />
+      </div>
+      <Skeleton class="h-80 w-full" />
+      <div class="grid gap-4 lg:grid-cols-2">
+        <Skeleton class="h-80" />
+        <Skeleton class="h-80" />
+      </div>
+    </template>
+    <template v-else>
     <!-- KPI cards (Insights style: icon chip + value + label) -->
     <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
       <div v-for="k in kpis" :key="k.key" class="rounded-xl border border-outline-gray-1 bg-surface-white p-4">
@@ -21,12 +32,14 @@
       <RecentList title="Recent Sales" slug="sales-invoice" :rows="data.recent_sales || []" />
       <RecentList title="Recent Purchases" slug="purchase-invoice" :rows="data.recent_purchases || []" />
     </div>
+    </template>
   </div>
 </template>
 
 <script setup>
 import { computed } from 'vue'
 import { AxisChart, createResource } from 'frappe-ui'
+import Skeleton from '@/components/Skeleton.vue'
 import DollarSign from '~icons/lucide/dollar-sign'
 import ShoppingCart from '~icons/lucide/shopping-cart'
 import TrendingUp from '~icons/lucide/trending-up'
@@ -39,6 +52,7 @@ import RecentList from '@/components/RecentList.vue'
 
 const hub = createResource({ url: 'kamil.api.get_hub_data', auto: true })
 const data = computed(() => hub.data || {})
+const loading = computed(() => hub.loading && !hub.data)
 
 const CHIP = {
   green: 'bg-green-100 text-green-600',

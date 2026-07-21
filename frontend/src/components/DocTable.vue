@@ -1,5 +1,5 @@
 <template>
-  <div class="flex h-[calc(100vh-9.5rem)] flex-col gap-3">
+  <div ref="rootEl" class="flex min-h-0 flex-1 flex-col gap-3">
     <div class="flex items-center justify-between">
       <h2 class="text-lg font-semibold text-ink-gray-8">{{ title }}</h2>
       <Button v-if="canCreate" variant="solid" :label="newLabel" @click="openNew">
@@ -7,8 +7,22 @@
       </Button>
     </div>
 
+    <!-- Pull-to-refresh indicator (mobile) -->
+    <div
+      v-if="ptrDistance || ptrRefreshing"
+      class="flex items-center justify-center overflow-hidden text-ink-gray-5"
+      :style="{ height: (ptrRefreshing ? 36 : ptrDistance) + 'px' }"
+    >
+      <Spinner v-if="ptrRefreshing" class="h-4 w-4" />
+      <ArrowDown v-else class="h-4 w-4 transition-transform" :style="{ transform: `rotate(${Math.min((ptrDistance / 64) * 180, 180)}deg)` }" />
+    </div>
+
+    <div v-if="list.loading && !rows.length" class="min-h-0 flex-1 space-y-2 overflow-hidden rounded-lg border border-outline-gray-1 bg-surface-white p-3">
+      <Skeleton v-for="n in 12" :key="n" class="h-9 w-full" />
+    </div>
     <ListView
-      class="flex-1 rounded-lg border border-outline-gray-1 bg-surface-white"
+      v-else
+      class="min-h-0 flex-1 rounded-lg border border-outline-gray-1 bg-surface-white"
       :columns="listColumns"
       :rows="rows"
       row-key="name"
@@ -48,11 +62,16 @@
 
 <script setup>
 import { ref, computed } from 'vue'
-import { Button, Badge, ListView, createListResource } from 'frappe-ui'
+import { Button, Badge, ListView, Spinner, createListResource } from 'frappe-ui'
 import Plus from '~icons/lucide/plus'
+import ArrowDown from '~icons/lucide/arrow-down'
 import CreateDialog from '@/components/dialogs/CreateDialog.vue'
 import PaymentDialog from '@/components/dialogs/PaymentDialog.vue'
 import DocViewDialog from '@/components/dialogs/DocViewDialog.vue'
+import { useIsMobile } from '@/composables/useIsMobile'
+import { usePullToRefresh } from '@/composables/usePullToRefresh'
+import Skeleton from '@/components/Skeleton.vue'
+import { haptic } from '@/utils/haptics'
 
 const props = defineProps({
   title: { type: String, required: true },
@@ -65,6 +84,7 @@ const props = defineProps({
   special: { type: String, default: '' },
 })
 
+const rootEl = ref(null)
 const showCreate = ref(false)
 const showPayment = ref(false)
 const showView = ref(false)
@@ -76,6 +96,7 @@ const newLabel = computed(() =>
 )
 
 function openNew() {
+  haptic()
   if (props.special === 'payment') showPayment.value = true
   else showCreate.value = true
 }
@@ -96,8 +117,14 @@ const queryFields = computed(() => {
   return [...set]
 })
 
+const isMobile = useIsMobile()
+const visibleColumns = computed(() =>
+  isMobile.value
+    ? props.columns.filter((c) => c.field === 'name' || c.type === 'currency' || c.type === 'status')
+    : props.columns,
+)
 const listColumns = computed(() =>
-  props.columns.map((c) => ({
+  visibleColumns.value.map((c) => ({
     label: c.label,
     key: c.field,
     type: c.type,
@@ -117,7 +144,13 @@ const list = createListResource({
 
 const rows = computed(() => list.data || [])
 
+const { distance: ptrDistance, refreshing: ptrRefreshing } = usePullToRefresh(rootEl, () => {
+  list.reload()
+  return new Promise((r) => setTimeout(r, 700))
+})
+
 function openDoc(row) {
+  haptic()
   viewName.value = row.name
   showView.value = true
 }

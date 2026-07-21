@@ -9,6 +9,7 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     AppShell: typeof import('./src/components/AppShell.vue')['default']
+    BottomNav: typeof import('./src/components/BottomNav.vue')['default']
     ComboField: typeof import('./src/components/ComboField.vue')['default']
     CreateDialog: typeof import('./src/components/dialogs/CreateDialog.vue')['default']
     DocTable: typeof import('./src/components/DocTable.vue')['default']
@@ -20,5 +21,6 @@ declare module 'vue' {
     RecentList: typeof import('./src/components/RecentList.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    Skeleton: typeof import('./src/components/Skeleton.vue')['default']
   }
 }
