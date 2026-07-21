@@ -1,8 +1,13 @@
 @import 'frappe-ui/style.css';
 
-/* Slightly narrower app sidebar (default frappe-ui width is w-60 / 15rem) */
+/* App sidebar: comfortable drawer width on mobile, compact column on desktop */
 .bg-surface-menu-bar.w-60 {
-  width: 13.5rem;
+  width: 16.5rem;
+}
+@media (min-width: 768px) {
+  .bg-surface-menu-bar.w-60 {
+    width: 13.5rem;
+  }
 }
 
 /* Tap feedback on touch devices */

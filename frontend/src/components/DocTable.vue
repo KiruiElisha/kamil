@@ -17,9 +17,37 @@
       <ArrowDown v-else class="h-4 w-4 transition-transform" :style="{ transform: `rotate(${Math.min((ptrDistance / 64) * 180, 180)}deg)` }" />
     </div>
 
+    <!-- Loading skeleton -->
     <div v-if="list.loading && !rows.length" class="min-h-0 flex-1 space-y-2 overflow-hidden rounded-lg border border-outline-gray-1 bg-surface-white p-3">
       <Skeleton v-for="n in 12" :key="n" class="h-9 w-full" />
     </div>
+
+    <!-- Mobile: stacked cards — everything fits, no horizontal scrolling -->
+    <div
+      v-else-if="isMobile"
+      class="min-h-0 flex-1 overflow-y-auto rounded-lg border border-outline-gray-1 bg-surface-white"
+    >
+      <div v-if="!rows.length" class="p-8 text-center text-sm text-ink-gray-5">Nothing here yet.</div>
+      <button
+        v-for="row in rows"
+        :key="row.name"
+        class="flex w-full items-start justify-between gap-3 border-b border-outline-gray-1 px-3 py-3 text-left last:border-0 active:bg-surface-gray-2"
+        @click="openDoc(row)"
+      >
+        <div class="min-w-0 flex-1">
+          <div class="truncate text-sm font-medium text-ink-gray-8">{{ row[nameField] }}</div>
+          <div v-if="subtitle(row)" class="mt-0.5 truncate text-xs text-ink-gray-5">{{ subtitle(row) }}</div>
+        </div>
+        <div class="flex shrink-0 flex-col items-end gap-1">
+          <span v-if="amountField" class="text-sm font-medium tabular-nums text-ink-gray-8">
+            {{ fmtCurrency(row[amountField], row[currencyField]) }}
+          </span>
+          <Badge v-if="statusField" :theme="statusTheme(row[statusField])" :label="row[statusField] || 'Draft'" />
+        </div>
+      </button>
+    </div>
+
+    <!-- Desktop: full table -->
     <ListView
       v-else
       class="min-h-0 flex-1 rounded-lg border border-outline-gray-1 bg-surface-white"
@@ -90,10 +118,27 @@ const showPayment = ref(false)
 const showView = ref(false)
 const viewName = ref('')
 
+const isMobile = useIsMobile()
+
 const canCreate = computed(() => !!props.createConfig || props.special === 'payment')
 const newLabel = computed(() =>
   props.special === 'payment' ? 'New Payment' : 'New ' + (props.createConfig?.label || 'Record'),
 )
+
+// Field roles derived from the column config (drives the mobile card layout)
+const pick = (fn) => computed(() => (props.columns.find(fn) || {}).field || '')
+const nameField = pick((c) => c.field === 'name')
+const statusField = pick((c) => c.type === 'status')
+const amountField = pick((c) => c.type === 'currency')
+const dateField = pick((c) => c.type === 'date')
+const partyField = pick((c) => !c.type && c.field !== 'name')
+
+function subtitle(row) {
+  const parts = []
+  if (partyField.value && row[partyField.value]) parts.push(row[partyField.value])
+  if (dateField.value && row[dateField.value]) parts.push(fmtDate(row[dateField.value]))
+  return parts.join(' · ')
+}
 
 function openNew() {
   haptic()
@@ -103,8 +148,6 @@ function openNew() {
 function onCreated() {
   list.reload()
 }
-
-const slug = computed(() => props.doctype.toLowerCase().replace(/ /g, '-'))
 
 const queryFields = computed(() => {
   const set = new Set(['name'])
@@ -117,14 +160,8 @@ const queryFields = computed(() => {
   return [...set]
 })
 
-const isMobile = useIsMobile()
-const visibleColumns = computed(() =>
-  isMobile.value
-    ? props.columns.filter((c) => c.field === 'name' || c.type === 'currency' || c.type === 'status')
-    : props.columns,
-)
 const listColumns = computed(() =>
-  visibleColumns.value.map((c) => ({
+  props.columns.map((c) => ({
     label: c.label,
     key: c.field,
     type: c.type,

@@ -9,10 +9,10 @@
 
     <!-- Sidebar: static on desktop, off-canvas drawer on mobile -->
     <div
-      class="fixed left-0 top-0 z-40 h-full transition-transform duration-200 ease-in-out md:static md:z-auto md:translate-x-0"
+      class="fixed left-0 top-0 z-40 h-full shadow-2xl transition-transform duration-200 ease-in-out md:static md:z-auto md:translate-x-0 md:shadow-none"
       :class="mobileNav ? 'translate-x-0' : '-translate-x-full md:translate-x-0'"
     >
-      <Sidebar :header="header" :sections="sections" />
+      <Sidebar :header="header" :sections="sections" :disable-collapse="isMobile" />
     </div>
 
     <div class="flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -63,11 +63,13 @@ import PaymentDialog from '@/components/dialogs/PaymentDialog.vue'
 import InvoiceFromOrderDialog from '@/components/dialogs/InvoiceFromOrderDialog.vue'
 import BottomNav from '@/components/BottomNav.vue'
 import { haptic } from '@/utils/haptics'
+import { useIsMobile } from '@/composables/useIsMobile'
 
 const route = useRoute()
 const router = useRouter()
 const user = createResource({ url: 'frappe.auth.get_logged_user', auto: true })
 
+const isMobile = useIsMobile()
 const mobileNav = ref(false)
 watch(() => route.fullPath, () => (mobileNav.value = false))
 function openDrawer() {

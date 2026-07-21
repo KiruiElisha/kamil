@@ -1,7 +1,30 @@
 <template>
   <div class="flex flex-col gap-2">
     <h2 class="text-sm font-semibold text-ink-gray-8">{{ title }}</h2>
+
+    <!-- Mobile: stacked cards (no horizontal scrolling) -->
+    <div v-if="isMobile" class="max-h-80 overflow-y-auto rounded-lg border border-outline-gray-1 bg-surface-white">
+      <div v-if="!rows.length" class="p-6 text-center text-sm text-ink-gray-5">No recent documents.</div>
+      <button
+        v-for="row in rows"
+        :key="row.name"
+        class="flex w-full items-start justify-between gap-3 border-b border-outline-gray-1 px-3 py-2.5 text-left last:border-0 active:bg-surface-gray-2"
+        @click="open(row)"
+      >
+        <div class="min-w-0 flex-1">
+          <div class="truncate text-sm font-medium text-ink-gray-8">{{ row.name }}</div>
+          <div v-if="row.party" class="mt-0.5 truncate text-xs text-ink-gray-5">{{ row.party }}</div>
+        </div>
+        <div class="flex shrink-0 flex-col items-end gap-1">
+          <span class="text-sm tabular-nums text-ink-gray-8">{{ money(row.grand_total, row.currency) }}</span>
+          <Badge :theme="theme(row.status)" :label="row.status || 'Draft'" />
+        </div>
+      </button>
+    </div>
+
+    <!-- Desktop: table -->
     <ListView
+      v-else
       class="h-80 rounded-lg border border-outline-gray-1 bg-surface-white"
       :columns="cols"
       :rows="rows"
@@ -23,13 +46,25 @@
         </span>
       </template>
     </ListView>
+
+    <DocViewDialog
+      v-model="showView"
+      :doctype="doctype"
+      :name="viewName"
+      :columns="cfg?.columns || []"
+      :child="cfg?.create?.child || null"
+      :currency-field="cfg?.currencyField ?? 'currency'"
+    />
   </div>
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { ref, computed } from 'vue'
 import { Badge, ListView } from 'frappe-ui'
 import { useIsMobile } from '@/composables/useIsMobile'
+import { haptic } from '@/utils/haptics'
+import { findList } from '@/data/doctypes.js'
+import DocViewDialog from '@/components/dialogs/DocViewDialog.vue'
 
 const props = defineProps({
   title: String,
@@ -38,18 +73,28 @@ const props = defineProps({
 })
 
 const isMobile = useIsMobile()
-const cols = computed(() => {
-  const all = [
-    { label: 'Document', key: 'name', width: 2 },
-    { label: 'Party', key: 'party', width: 2 },
-    { label: 'Status', key: 'status', width: 1 },
-    { label: 'Total', key: 'grand_total', width: 1, align: 'right' },
-  ]
-  return isMobile.value ? all.filter((c) => c.key !== 'party') : all
-})
+
+// `slug` matches the list key in doctypes.js (e.g. 'sales-invoice')
+const cfg = computed(() => findList(props.slug))
+const doctype = computed(
+  () =>
+    cfg.value?.doctype ||
+    props.slug.split('-').map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(' '),
+)
+const showView = ref(false)
+const viewName = ref('')
+
+const cols = [
+  { label: 'Document', key: 'name', width: 2 },
+  { label: 'Party', key: 'party', width: 2 },
+  { label: 'Status', key: 'status', width: 1 },
+  { label: 'Total', key: 'grand_total', width: 1, align: 'right' },
+]
 
 function open(row) {
-  window.location.href = `/app/${props.slug}/${encodeURIComponent(row.name)}`
+  haptic()
+  viewName.value = row.name
+  showView.value = true
 }
 function money(v, c) {
   try {
