@@ -58,6 +58,10 @@ import LogOut from '~icons/lucide/log-out'
 import Plus from '~icons/lucide/plus'
 import Menu from '~icons/lucide/menu'
 import { LISTS, SECTIONS, findList } from '@/data/doctypes.js'
+import { REPORTS, findReport } from '@/data/reports.js'
+import BarChart from '~icons/lucide/bar-chart-3'
+import { getDefaults } from '@/data/defaults.js'
+import UserIcon from '~icons/lucide/user'
 import CreateDialog from '@/components/dialogs/CreateDialog.vue'
 import PaymentDialog from '@/components/dialogs/PaymentDialog.vue'
 import InvoiceFromOrderDialog from '@/components/dialogs/InvoiceFromOrderDialog.vue'
@@ -70,6 +74,9 @@ const router = useRouter()
 const user = createResource({ url: 'frappe.auth.get_logged_user', auto: true })
 
 const isMobile = useIsMobile()
+const company = ref('')
+getDefaults().then((d) => (company.value = d?.company || ''))
+
 const mobileNav = ref(false)
 watch(() => route.fullPath, () => (mobileNav.value = false))
 function openDrawer() {
@@ -130,8 +137,10 @@ const createOptions = [
 
 const header = computed(() => ({
   title: 'Kamil Energy',
-  subtitle: user.data || 'Jemkas Pharma Kenya Ltd',
+  subtitle: company.value || 'Jemkas Pharma Kenya Ltd',
+  logo: '/assets/kamil/frontend/icon-192.png',
   menuItems: [
+    { label: user.data || 'Signed in', icon: UserIcon, onClick: () => {} },
     { label: 'Open ERPNext Desk', icon: ExternalLink, onClick: () => (window.location.href = '/app') },
     { label: 'Logout', icon: LogOut, onClick: () => (window.location.href = '/app/logout') },
   ],
@@ -141,21 +150,30 @@ const sections = computed(() => {
   const dashboard = {
     items: [
       { label: 'Dashboard', to: '/dashboard', icon: Home, isActive: route.path === '/dashboard' || route.path === '/' },
+      {
+        label: 'Reports',
+        to: '/reports',
+        icon: BarChart,
+        isActive: route.name === 'Reports' || route.name === 'Report',
+      },
     ],
   }
   const groups = SECTIONS.map((sec) => ({
     label: sec,
+    collapsible: true,
     items: LISTS.filter((l) => l.section === sec).map((l) => ({
       label: l.title,
       to: `/list/${l.key}`,
       icon: l.icon,
-      isActive: route.params.key === l.key,
+      isActive: route.name === 'List' && route.params.key === l.key,
     })),
   }))
   return [dashboard, ...groups]
 })
 
 const pageTitle = computed(() => {
+  if (route.name === 'Reports') return 'Reports'
+  if (route.name === 'Report') return findReport(route.params.key)?.title || 'Report'
   if (route.params.key) return findList(route.params.key)?.title || 'List'
   return route.name || 'Kamil Energy'
 })

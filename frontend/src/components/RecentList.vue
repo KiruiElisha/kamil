@@ -25,7 +25,7 @@
     <!-- Desktop: table -->
     <ListView
       v-else
-      class="h-80 rounded-lg border border-outline-gray-1 bg-surface-white"
+      class="kamil-list h-80 rounded-lg border border-outline-gray-1 bg-surface-white"
       :columns="cols"
       :rows="rows"
       row-key="name"

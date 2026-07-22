@@ -574,15 +574,92 @@ def send_document_whatsapp(
 	phone_number: str | None = None,
 	message: str | None = None,
 	sender: str | None = None,
+	print_format: str | None = None,
 ) -> dict:
-	"""Send a document's PDF to its party via WhatsApp (whatsapp_integration app).
-	Phone auto-resolves from the document's party/contact when not provided."""
-	from whatsapp_integration.api.whatsapp.whatsapp import send_document_via_whatsapp
+	"""Send a document's PDF to its party via WhatsApp.
 
-	result = send_document_via_whatsapp(
-		doctype, name, phone_number=phone_number or None, message=message or None, sender=sender or None
+	Without `print_format` we delegate to the integration (its default behaviour).
+	With one, we build the PDF from that format and hand it to the same media sender.
+	"""
+	if not print_format:
+		from whatsapp_integration.api.whatsapp.whatsapp import send_document_via_whatsapp
+
+		result = send_document_via_whatsapp(
+			doctype, name, phone_number=phone_number or None, message=message or None, sender=sender or None
+		)
+		return result or {"success": True}
+
+	from frappe.utils import now_datetime
+	from frappe.utils.pdf import get_pdf
+	from whatsapp_integration.api.files import save_private_pdf
+	from whatsapp_integration.api.whatsapp.validators import validate_phone_number, validate_user_permissions
+	from whatsapp_integration.api.whatsapp.whatsapp import (
+		_finalize_send,
+		make_html_pdf_ready,
+		normalize_phone_number,
 	)
-	return result or {"success": True}
+	from whatsapp_integration.service.rest import send_whatsapp_media
+
+	validate_user_permissions(frappe.session.user, "send_message")
+
+	if not phone_number:
+		phone_number = resolve_document_phone(doctype, name)
+	if not phone_number:
+		frappe.throw(_("Please provide a phone number."))
+	phone_number = normalize_phone_number(phone_number)
+	validate_phone_number(phone_number)
+
+	try:
+		html = frappe.get_print(doctype, name, print_format=print_format, no_letterhead=0)
+		html = make_html_pdf_ready(html)
+		pdf_content = get_pdf(
+			html,
+			options={
+				"load-error-handling": "ignore",
+				"load-media-error-handling": "ignore",
+				"no-stop-slow-scripts": True,
+				"quiet": "",
+			},
+		)
+	except Exception as e:
+		frappe.log_error(frappe.get_traceback(), "Kamil WhatsApp PDF Generation Failed")
+		return {
+			"success": False,
+			"status": "pdf_error",
+			"error": _("Could not generate PDF for {0} {1}: {2}").format(doctype, name, str(e)),
+		}
+
+	file_name = f"{doctype}_{name}_{now_datetime().strftime('%Y%m%d_%H%M%S')}.pdf"
+	file_name = file_name.replace(" ", "_").replace("/", "-")
+	file_doc, media_url = save_private_pdf(
+		pdf_content, file_name, attached_to_doctype=doctype, attached_to_name=name
+	)
+	if not file_doc.file_url:
+		frappe.throw(_("Failed to generate file URL for the WhatsApp attachment."))
+
+	if not message:
+		message = _("Please find attached {0}: {1}").format(doctype, name)
+
+	response = send_whatsapp_media(
+		to_number=phone_number,
+		message=message,
+		media_url=media_url,
+		file_name=file_name.replace(".pdf", ""),
+		country_name=None,
+		sender=sender or None,
+		reference_doctype=doctype,
+		reference_name=name,
+	)
+
+	return _finalize_send(
+		response,
+		phone_number,
+		title="WhatsApp Document Send Failed",
+		success_msg=_("Document {0} sent to {1} via WhatsApp.").format(name, phone_number),
+		log_context=f"Document: {doctype} {name} ({print_format})",
+		notify=0,
+		silent=True,
+	)
 
 
 @frappe.whitelist()
@@ -596,10 +673,494 @@ def list_whatsapp_senders() -> list:
 
 @frappe.whitelist()
 def resolve_document_phone(doctype: str, name: str) -> str | None:
-	"""Best-effort phone number for a document's party/contact (WhatsApp prefill)."""
+	"""Best-effort phone for a document's party (WhatsApp prefill).
+
+	Order: the integration's own resolver -> phone fields on the document ->
+	the party master's mobile/phone -> the party's linked Contact.
+	"""
 	try:
 		from whatsapp_integration.service.utils import resolve_phone_number
 
-		return resolve_phone_number(doctype, name) or None
+		num = resolve_phone_number(doctype, name)
+		if num:
+			return num
 	except Exception:
-		return None
+		pass
+
+	try:
+		doc = frappe.get_doc(doctype, name)
+
+		for field in ("contact_mobile", "mobile_no", "contact_phone", "phone"):
+			if doc.get(field):
+				return doc.get(field)
+
+		party_type = party = None
+		if doc.get("customer"):
+			party_type, party = "Customer", doc.get("customer")
+		elif doc.get("supplier"):
+			party_type, party = "Supplier", doc.get("supplier")
+		elif doc.get("party_type") and doc.get("party"):
+			party_type, party = doc.get("party_type"), doc.get("party")
+		elif doc.get("quotation_to") and doc.get("party_name"):
+			party_type, party = doc.get("quotation_to"), doc.get("party_name")
+
+		if not (party_type and party):
+			return None
+
+		party_meta = frappe.get_meta(party_type)
+		for field in ("mobile_no", "phone"):
+			if party_meta.has_field(field):
+				value = frappe.db.get_value(party_type, party, field)
+				if value:
+					return value
+
+		contacts = frappe.get_all(
+			"Dynamic Link",
+			filters={"link_doctype": party_type, "link_name": party, "parenttype": "Contact"},
+			pluck="parent",
+		)
+		for contact in contacts:
+			row = frappe.db.get_value("Contact", contact, ["mobile_no", "phone"], as_dict=True)
+			if row and (row.mobile_no or row.phone):
+				return row.mobile_no or row.phone
+	except Exception:
+		pass
+
+	return None
+
+
+@frappe.whitelist()
+def get_print_formats(doctype: str) -> list:
+	"""Print formats available for a doctype (Standard first)."""
+	if not frappe.db.exists("DocType", doctype):
+		return []
+	names = frappe.get_all(
+		"Print Format", filters={"doc_type": doctype, "disabled": 0}, pluck="name", order_by="name"
+	)
+	default = frappe.db.get_value("Property Setter", {"doc_type": doctype, "property": "default_print_format"}, "value")
+	options = [{"label": "Standard", "value": "Standard"}] + [{"label": n, "value": n} for n in names]
+	if default:
+		options.sort(key=lambda o: o["value"] != default)
+	return options
+
+
+# ---------------------------------------------------------------------------
+# Dashboard analytics tabs
+# ---------------------------------------------------------------------------
+
+
+def _resolve_company(company: str | None = None):
+	companies = frappe.get_list("Company", pluck="name", order_by="name")
+	if company and company in companies:
+		return company
+	default = frappe.defaults.get_user_default("Company") or frappe.db.get_single_value(
+		"Global Defaults", "default_company"
+	)
+	if default in companies:
+		return default
+	return companies[0] if len(companies) == 1 else None
+
+
+def _currency_for(company):
+	if company:
+		return frappe.get_cached_value("Company", company, "default_currency")
+	return frappe.db.get_single_value("Global Defaults", "default_currency")
+
+
+def _last_12_months():
+	first = frappe.utils.get_first_day(nowdate())
+	months = []
+	for offset in range(11, -1, -1):
+		d = frappe.utils.add_months(first, -offset)
+		months.append({"key": d.strftime("%Y-%m"), "label": frappe.utils.formatdate(d, "MMM")})
+	return months
+
+
+def _party_totals(doctype, party_field, company, start, end):
+	"""Top parties by invoiced value."""
+	if not _can_read(doctype):
+		return []
+	clause, params = _company_clause(company)
+	params["start"] = start
+	params["end"] = end
+	rows = frappe.db.sql(
+		f"""select {party_field} as label, sum(base_grand_total) as value
+		from `tab{doctype}`
+		where docstatus = 1 and is_return = 0
+			and posting_date >= %(start)s and posting_date <= %(end)s{clause}
+		group by {party_field} order by value desc limit 8""",
+		params,
+		as_dict=True,
+	)
+	return [{"label": r.label or "—", "value": flt(r.value)} for r in rows]
+
+
+def _item_totals(doctype, company, start, end):
+	"""Top items by invoiced value."""
+	if not _can_read(doctype):
+		return []
+	child = f"{doctype} Item"
+	clause = " and p.company = %(company)s" if company else ""
+	params = {"company": company, "start": start, "end": end}
+	rows = frappe.db.sql(
+		f"""select c.item_code as label, sum(c.qty) as qty, sum(c.base_amount) as value
+		from `tab{child}` c inner join `tab{doctype}` p on p.name = c.parent
+		where p.docstatus = 1 and p.is_return = 0
+			and p.posting_date >= %(start)s and p.posting_date <= %(end)s{clause}
+		group by c.item_code order by value desc limit 8""",
+		params,
+		as_dict=True,
+	)
+	return [{"label": r.label or "—", "value": flt(r.value), "sub": f"{flt(r.qty):g} qty"} for r in rows]
+
+
+def _aging(doctype, party_field, company):
+	"""Outstanding split into aging buckets + top outstanding parties."""
+	if not _can_read(doctype):
+		return {"buckets": [], "top": [], "total": 0.0}
+	clause, params = _company_clause(company)
+	rows = frappe.db.sql(
+		f"""select
+			case
+				when datediff(curdate(), ifnull(due_date, posting_date)) <= 0 then 'Current'
+				when datediff(curdate(), ifnull(due_date, posting_date)) <= 30 then '1-30'
+				when datediff(curdate(), ifnull(due_date, posting_date)) <= 60 then '31-60'
+				when datediff(curdate(), ifnull(due_date, posting_date)) <= 90 then '61-90'
+				else '90+'
+			end as bucket,
+			sum(outstanding_amount) as total
+		from `tab{doctype}`
+		where docstatus = 1 and outstanding_amount > 0{clause}
+		group by bucket""",
+		params,
+		as_dict=True,
+	)
+	found = {r.bucket: flt(r.total) for r in rows}
+	order = ["Current", "1-30", "31-60", "61-90", "90+"]
+	buckets = [{"label": b, "value": found.get(b, 0.0)} for b in order]
+
+	top = frappe.db.sql(
+		f"""select {party_field} as label, sum(outstanding_amount) as value
+		from `tab{doctype}`
+		where docstatus = 1 and outstanding_amount > 0{clause}
+		group by {party_field} order by value desc limit 8""",
+		params,
+		as_dict=True,
+	)
+	return {
+		"buckets": buckets,
+		"top": [{"label": r.label or "—", "value": flt(r.value)} for r in top],
+		"total": sum(b["value"] for b in buckets),
+	}
+
+
+def _invoice_analytics(doctype, party_field, company):
+	company = _resolve_company(company)
+	months = _last_12_months()
+	start = months[0]["key"] + "-01"
+	# Upper bound keeps monthly buckets, totals, counts and "top" lists consistent
+	# (documents dated beyond this month would otherwise inflate the totals only).
+	end = frappe.utils.get_last_day(nowdate())
+
+	by_month = {}
+	count = 0
+	if _can_read(doctype):
+		clause, params = _company_clause(company)
+		params["start"] = start
+		params["end"] = end
+		rows = frappe.db.sql(
+			f"""select date_format(posting_date, '%%Y-%%m') as ym, sum(base_grand_total) as total
+			from `tab{doctype}`
+			where docstatus = 1 and is_return = 0
+				and posting_date >= %(start)s and posting_date <= %(end)s{clause}
+			group by ym""",
+			params,
+			as_dict=True,
+		)
+		by_month = {r.ym: flt(r.total) for r in rows}
+		count = (
+			frappe.db.sql(
+				f"""select count(name) from `tab{doctype}`
+				where docstatus = 1 and is_return = 0
+					and posting_date >= %(start)s and posting_date <= %(end)s{clause}""",
+				params,
+			)[0][0]
+			or 0
+		)
+
+	monthly = [{"label": m["label"], "total": by_month.get(m["key"], 0.0)} for m in months]
+	total_12m = sum(m["total"] for m in monthly)
+
+	return {
+		"company": company,
+		"currency": _currency_for(company),
+		"monthly": monthly,
+		"total_12m": total_12m,
+		"count_12m": count,
+		"avg_value": (total_12m / count) if count else 0.0,
+		"top_parties": _party_totals(doctype, party_field, company, start, end),
+		"top_items": _item_totals(doctype, company, start, end),
+	}
+
+
+@frappe.whitelist()
+def get_sales_analytics(company: str | None = None) -> dict:
+	return _invoice_analytics("Sales Invoice", "customer", company)
+
+
+@frappe.whitelist()
+def get_purchase_analytics(company: str | None = None) -> dict:
+	return _invoice_analytics("Purchase Invoice", "supplier", company)
+
+
+@frappe.whitelist()
+def get_ar_ap_analytics(company: str | None = None) -> dict:
+	company = _resolve_company(company)
+	return {
+		"company": company,
+		"currency": _currency_for(company),
+		"receivable": _aging("Sales Invoice", "customer", company),
+		"payable": _aging("Purchase Invoice", "supplier", company),
+	}
+
+
+# Field names are fixed whitelists (never interpolated from user input) so the
+# generic KPI query below is safe for any doctype the user may open.
+_KPI_AMOUNT_FIELDS = ("base_grand_total", "grand_total", "base_paid_amount", "paid_amount", "total_debit")
+_KPI_DATE_FIELDS = ("posting_date", "transaction_date", "schedule_date")
+
+
+@frappe.whitelist()
+def get_list_kpis(doctype: str, company: str | None = None) -> dict:
+	"""Small KPI strip shown above each list — adapts to whatever fields the doctype has."""
+	if not frappe.db.exists("DocType", doctype) or not _can_read(doctype):
+		return {"currency": None, "kpis": []}
+
+	meta = frappe.get_meta(doctype)
+	has_company = meta.has_field("company")
+	company = _resolve_company(company) if has_company else None
+	currency = _currency_for(company)
+
+	filters = {}
+	if has_company and company:
+		filters["company"] = company
+
+	where = "1=1"
+	params = {}
+	if has_company and company:
+		where = "company = %(company)s"
+		params["company"] = company
+
+	date_field = next((f for f in _KPI_DATE_FIELDS if meta.has_field(f)), "creation")
+	amount_field = next((f for f in _KPI_AMOUNT_FIELDS if meta.has_field(f)), None)
+
+	start = frappe.utils.get_first_day(nowdate())
+	end = frappe.utils.get_last_day(nowdate())
+	kpis = []
+
+	def _scalar(sql, p):
+		try:
+			return frappe.db.sql(sql, p)[0][0] or 0
+		except Exception:
+			return 0
+
+	if amount_field:
+		p = dict(params, start=start, end=end)
+		total = _scalar(
+			f"""select sum({amount_field}) from `tab{doctype}`
+			where docstatus = 1 and {date_field} between %(start)s and %(end)s and {where}""",
+			p,
+		)
+		count = _scalar(
+			f"""select count(name) from `tab{doctype}`
+			where docstatus = 1 and {date_field} between %(start)s and %(end)s and {where}""",
+			p,
+		)
+		kpis.append({"label": "This month", "value": flt(total), "money": True, "color": "green"})
+		kpis.append({"label": "This month (count)", "value": count, "money": False, "color": "blue"})
+	else:
+		kpis.append({"label": "Total records", "value": frappe.db.count(doctype, filters), "money": False, "color": "blue"})
+
+	if meta.is_submittable:
+		kpis.append(
+			{"label": "Drafts", "value": frappe.db.count(doctype, {**filters, "docstatus": 0}), "money": False, "color": "orange"}
+		)
+
+	if meta.has_field("outstanding_amount"):
+		outstanding = _scalar(
+			f"""select sum(outstanding_amount) from `tab{doctype}`
+			where docstatus = 1 and outstanding_amount > 0 and {where}""",
+			params,
+		)
+		kpis.append({"label": "Outstanding", "value": flt(outstanding), "money": True, "color": "amber"})
+	elif meta.has_field("disabled"):
+		kpis.append({"label": "Active", "value": frappe.db.count(doctype, {**filters, "disabled": 0}), "money": False, "color": "green"})
+
+	return {"currency": currency, "kpis": kpis}
+
+
+@frappe.whitelist()
+def run_report(report: str, filters: str | dict | None = None, limit: int = 500) -> dict:
+	"""Run a standard query report and return normalised columns/rows for the app."""
+	from frappe.desk.query_report import run as run_query_report
+
+	try:
+		filters = frappe.parse_json(filters) if isinstance(filters, str) else (filters or {})
+	except Exception:
+		filters = {}
+	if not isinstance(filters, dict):
+		filters = {}
+	if not filters.get("company"):
+		filters["company"] = _resolve_company(None)
+
+	res = run_query_report(report_name=report, filters=filters, ignore_prepared_report=True) or {}
+
+	columns = []
+	for col in res.get("columns") or []:
+		if isinstance(col, str):
+			# legacy "Label:Type/Options:Width"
+			parts = col.split(":")
+			label = parts[0]
+			fieldtype = (parts[1].split("/")[0] if len(parts) > 1 else "Data") or "Data"
+			columns.append({"label": label, "fieldname": frappe.scrub(label), "fieldtype": fieldtype})
+		else:
+			label = col.get("label") or col.get("fieldname") or ""
+			columns.append(
+				{
+					"label": label,
+					"fieldname": col.get("fieldname") or frappe.scrub(label),
+					"fieldtype": col.get("fieldtype") or "Data",
+				}
+			)
+
+	rows = []
+	for row in (res.get("result") or [])[: frappe.utils.cint(limit)]:
+		if isinstance(row, dict):
+			rows.append(row)
+		elif isinstance(row, (list, tuple)):
+			rows.append({columns[i]["fieldname"]: v for i, v in enumerate(row) if i < len(columns)})
+
+	return {
+		"columns": columns,
+		"rows": rows,
+		"currency": _currency_for(filters.get("company")),
+		"truncated": len(res.get("result") or []) > frappe.utils.cint(limit),
+	}
+
+
+@frappe.whitelist()
+def get_status_options(doctype: str) -> list:
+	"""Select options of a doctype's `status` field, for the list filter."""
+	if not frappe.db.exists("DocType", doctype) or not _can_read(doctype):
+		return []
+	field = frappe.get_meta(doctype).get_field("status")
+	if not field or field.fieldtype != "Select" or not field.options:
+		return []
+	options = [o.strip() for o in field.options.split("\n") if o.strip()]
+	return [{"label": "All statuses", "value": ""}] + [{"label": o, "value": o} for o in options]
+
+
+@frappe.whitelist()
+def export_report(report: str, filters: str | dict | None = None, file_format: str = "Excel") -> None:
+	"""Stream a query report as .xlsx (or .csv) download."""
+	data = run_report(report, filters, limit=100000)
+	columns = data.get("columns") or []
+	rows = data.get("rows") or []
+
+	matrix = [[c.get("label") or c.get("fieldname") for c in columns]]
+	for row in rows:
+		matrix.append([("" if row.get(c["fieldname"]) is None else row.get(c["fieldname"])) for c in columns])
+
+	safe_name = (report or "report").replace(" ", "_").replace("/", "-")
+
+	if (file_format or "").lower() == "csv":
+		from frappe.utils.csvutils import to_csv
+
+		frappe.response["result"] = to_csv(matrix)
+		frappe.response["type"] = "csv"
+		frappe.response["doctype"] = safe_name
+		return
+
+	from frappe.utils.xlsxutils import make_xlsx
+
+	xlsx_file = make_xlsx(matrix, safe_name)
+	frappe.response["filename"] = f"{safe_name}.xlsx"
+	frappe.response["filecontent"] = xlsx_file.getvalue()
+	frappe.response["type"] = "binary"
+
+
+_SELLING_DOCTYPES = ("Quotation", "Sales Order", "Delivery Note", "Sales Invoice")
+
+
+@frappe.whitelist()
+def get_item_rate(
+	item_code: str,
+	doctype: str | None = None,
+	party: str | None = None,
+	company: str | None = None,
+	price_list: str | None = None,
+) -> dict:
+	"""Best-effort rate for an item when building a document in the app.
+
+	Order: party/default price list -> Item Price (date-valid) -> item defaults
+	(standard rate for selling, last purchase rate for buying) -> valuation rate.
+	"""
+	if not item_code or not frappe.db.exists("Item", item_code):
+		return {"rate": 0, "price_list": None}
+
+	selling = (doctype or "") in _SELLING_DOCTYPES
+	company = company or _resolve_company(None)
+
+	if not price_list and party:
+		party_type = "Customer" if selling else "Supplier"
+		if frappe.db.exists(party_type, party):
+			price_list = frappe.db.get_value(party_type, party, "default_price_list")
+	if not price_list:
+		price_list = (
+			frappe.db.get_single_value("Selling Settings", "selling_price_list")
+			if selling
+			else frappe.db.get_single_value("Buying Settings", "buying_price_list")
+		)
+
+	rate = 0.0
+	today = nowdate()
+	if price_list:
+		rows = frappe.get_all(
+			"Item Price",
+			filters={"item_code": item_code, "price_list": price_list},
+			fields=["price_list_rate", "valid_from", "valid_upto"],
+			order_by="valid_from desc",
+			limit_page_length=20,
+		)
+		for r in rows:
+			if r.valid_from and str(r.valid_from) > today:
+				continue
+			if r.valid_upto and str(r.valid_upto) < today:
+				continue
+			rate = flt(r.price_list_rate)
+			if rate:
+				break
+
+	item = frappe.db.get_value(
+		"Item", item_code, ["item_name", "stock_uom", "standard_rate", "last_purchase_rate"], as_dict=True
+	) or frappe._dict()
+
+	if not rate:
+		rate = flt(item.standard_rate) if selling else flt(item.last_purchase_rate)
+
+	if not rate:
+		bin_filters = {"item_code": item_code}
+		if company:
+			warehouses = frappe.get_all("Warehouse", filters={"company": company, "is_group": 0}, pluck="name")
+			if warehouses:
+				bin_filters["warehouse"] = ["in", warehouses]
+		rate = flt(
+			frappe.db.get_value("Bin", bin_filters, "valuation_rate", order_by="valuation_rate desc")
+		)
+
+	return {
+		"rate": flt(rate),
+		"price_list": price_list,
+		"item_name": item.item_name,
+		"uom": item.stock_uom,
+	}

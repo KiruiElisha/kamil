@@ -33,6 +33,9 @@
           :title="config.child.title"
           :columns="config.child.columns"
           :modelValue="values[config.child.fieldname]"
+          :doctype="config.doctype"
+          :party="partyValue"
+          :company="values.company || ''"
           @update:modelValue="(v) => (values[config.child.fieldname] = v)"
         />
 
@@ -49,7 +52,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, watch } from 'vue'
+import { ref, reactive, watch, computed } from 'vue'
 import { Dialog, Button, FormControl, ErrorMessage, call } from 'frappe-ui'
 import LinkField from '@/components/LinkField.vue'
 import ComboField from '@/components/ComboField.vue'
@@ -61,6 +64,7 @@ const props = defineProps({ config: Object })
 const emit = defineEmits(['created'])
 
 const values = reactive({})
+const partyValue = computed(() => values.customer || values.supplier || values.party_name || '')
 const error = ref('')
 const loading = ref(false)
 

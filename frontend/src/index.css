@@ -10,6 +10,26 @@
   }
 }
 
+/* Sidebar still scrolls on short screens, but without a visible scrollbar */
+.bg-surface-menu-bar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.bg-surface-menu-bar::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* ListView sizes itself to content (w-max), which forces horizontal scrolling.
+   Force it to fit the container so `fr` columns share the available width. */
+.kamil-list.w-max {
+  width: 100%;
+}
+/* Grid children must be allowed to shrink for truncation to kick in */
+.kamil-list .grid > * {
+  min-width: 0;
+}
+
 /* Tap feedback on touch devices */
 @media (hover: none) {
   button:active,

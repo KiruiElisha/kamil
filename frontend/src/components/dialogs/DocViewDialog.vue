@@ -38,6 +38,24 @@
           </div>
         </div>
 
+        <!-- Print panel -->
+        <div v-if="printOpen" class="space-y-3 rounded-lg border border-outline-gray-1 bg-surface-gray-1 p-3">
+          <div class="flex items-center gap-2 text-sm font-semibold text-ink-gray-8">
+            <Printer class="h-4 w-4 text-ink-gray-6" /> Print
+          </div>
+          <ComboField
+            label="Print format"
+            :options="printFormats"
+            :modelValue="printFormat"
+            @update:modelValue="(v) => (printFormat = v || 'Standard')"
+          />
+          <div class="flex flex-wrap justify-end gap-2">
+            <Button label="Cancel" @click="printOpen = false" />
+            <Button label="Download PDF" @click="downloadPdf" />
+            <Button variant="solid" label="Print" @click="openPrint" />
+          </div>
+        </div>
+
         <!-- WhatsApp panel -->
         <div v-if="waOpen" class="space-y-3 rounded-lg border border-outline-gray-1 bg-surface-gray-1 p-3">
           <div class="flex items-center gap-2 text-sm font-semibold text-ink-gray-8">
@@ -49,6 +67,12 @@
             :options="senderOptions"
             :modelValue="waSender"
             @update:modelValue="(v) => (waSender = v || '')"
+          />
+          <ComboField
+            label="Attach print format"
+            :options="printFormats"
+            :modelValue="waFormat"
+            @update:modelValue="(v) => (waFormat = v || 'Standard')"
           />
           <FormControl type="text" label="Phone (optional — auto-detected from party)" placeholder="+2547…" v-model="waPhone" />
           <FormControl type="textarea" label="Message (optional)" v-model="waMessage" />
@@ -68,6 +92,12 @@
           <Button label="Open in ERPNext" @click="openDesk">
             <template #prefix><ExternalLink class="h-4 w-4" /></template>
           </Button>
+          <Button v-if="partyLink" label="Ledger" @click="openLedger">
+            <template #prefix><BookOpen class="h-4 w-4" /></template>
+          </Button>
+          <Button label="Print" @click="printOpen = !printOpen">
+            <template #prefix><Printer class="h-4 w-4" /></template>
+          </Button>
           <Button label="WhatsApp" @click="toggleWhatsApp">
             <template #prefix><MessageCircle class="h-4 w-4 text-green-600" /></template>
           </Button>
@@ -86,8 +116,12 @@ import { ref, computed, watch } from 'vue'
 import { Dialog, Button, Badge, ErrorMessage, FormControl, call } from 'frappe-ui'
 import ExternalLink from '~icons/lucide/external-link'
 import MessageCircle from '~icons/lucide/message-circle'
+import Printer from '~icons/lucide/printer'
+import BookOpen from '~icons/lucide/book-open'
+import { useRouter } from 'vue-router'
 import ComboField from '@/components/ComboField.vue'
 
+const router = useRouter()
 const show = defineModel()
 const props = defineProps({
   doctype: { type: String, required: true },
@@ -115,6 +149,26 @@ const waOk = ref(false)
 const senderOptions = ref([])
 const waSender = ref('')
 
+// Print state
+const printOpen = ref(false)
+const printFormats = ref([{ label: 'Standard', value: 'Standard' }])
+const printFormat = ref('Standard')
+const waFormat = ref('Standard')
+
+const partyLink = computed(() => {
+  const d = doc.value
+  if (!d) return null
+  if (d.customer) return { party_type: 'Customer', party: d.customer }
+  if (d.supplier) return { party_type: 'Supplier', party: d.supplier }
+  if (d.party_type && d.party) return { party_type: d.party_type, party: d.party }
+  return null
+})
+function openLedger() {
+  if (!partyLink.value) return
+  show.value = false
+  router.push({ path: '/report/general-ledger', query: { ...partyLink.value } })
+}
+
 const childRows = computed(() => (doc.value && props.child ? doc.value[props.child.fieldname] || [] : []))
 const canSubmit = computed(() => doc.value && doc.value.docstatus === 0 && !NON_SUBMITTABLE.includes(props.doctype))
 
@@ -124,9 +178,19 @@ async function load() {
   error.value = ''
   doc.value = null
   waOpen.value = false
+  printOpen.value = false
   waResult.value = ''
   try {
     doc.value = await call('frappe.client.get', { doctype: props.doctype, name: props.name })
+    try {
+      printFormats.value = (await call('kamil.api.get_print_formats', { doctype: props.doctype })) || [
+        { label: 'Standard', value: 'Standard' },
+      ]
+      printFormat.value = printFormats.value[0]?.value || 'Standard'
+      waFormat.value = printFormat.value
+    } catch (e) {
+      printFormats.value = [{ label: 'Standard', value: 'Standard' }]
+    }
     try {
       senderOptions.value = (await call('kamil.api.list_whatsapp_senders')) || []
       if (!waSender.value && senderOptions.value.length) waSender.value = senderOptions.value[0].value
@@ -163,6 +227,25 @@ async function submit() {
   }
 }
 
+function printUrl(pdf) {
+  const q = new URLSearchParams({
+    doctype: props.doctype,
+    name: props.name,
+    format: printFormat.value || 'Standard',
+    no_letterhead: '0',
+  })
+  if (!pdf) q.set('trigger_print', '1')
+  return pdf
+    ? `/api/method/frappe.utils.print_format.download_pdf?${q.toString()}`
+    : `/printview?${q.toString()}`
+}
+function openPrint() {
+  window.open(printUrl(false), '_blank')
+}
+function downloadPdf() {
+  window.open(printUrl(true), '_blank')
+}
+
 async function toggleWhatsApp() {
   waOpen.value = !waOpen.value
   if (waOpen.value && !waPhone.value) {
@@ -185,6 +268,7 @@ async function sendWhatsApp() {
       phone_number: waPhone.value || null,
       message: waMessage.value || null,
       sender: waSender.value || null,
+      print_format: waFormat.value || null,
     })
     waOk.value = out?.success !== false
     waResult.value = waOk.value ? 'Sent via WhatsApp ✓' : out?.error || 'Failed to send.'

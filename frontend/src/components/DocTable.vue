@@ -7,6 +7,41 @@
       </Button>
     </div>
 
+    <!-- Per-doctype KPI strip -->
+    <div v-if="kpis.length" class="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <div
+        v-for="k in kpis"
+        :key="k.label"
+        class="rounded-lg border border-outline-gray-1 bg-surface-white px-3 py-2"
+      >
+        <div class="flex items-center gap-1.5">
+          <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="DOT[k.color] || 'bg-gray-400'" />
+          <span class="truncate text-xs text-ink-gray-5">{{ k.label }}</span>
+        </div>
+        <div class="mt-0.5 truncate text-base font-semibold text-ink-gray-9">{{ kpiValue(k) }}</div>
+      </div>
+    </div>
+
+    <!-- Search + filters -->
+    <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+      <TextInput
+        class="w-full sm:max-w-xs"
+        type="text"
+        :modelValue="search"
+        :placeholder="'Search ' + title.toLowerCase() + '…'"
+        @update:modelValue="onSearchInput"
+      />
+      <ComboField
+        v-if="statusOptions.length"
+        class="w-full sm:w-56"
+        :options="statusOptions"
+        :modelValue="statusValue"
+        placeholder="All statuses"
+        @update:modelValue="onStatus"
+      />
+      <Button v-if="search || statusValue" label="Clear" @click="clearFilters" />
+    </div>
+
     <!-- Pull-to-refresh indicator (mobile) -->
     <div
       v-if="ptrDistance || ptrRefreshing"
@@ -50,7 +85,7 @@
     <!-- Desktop: full table -->
     <ListView
       v-else
-      class="min-h-0 flex-1 rounded-lg border border-outline-gray-1 bg-surface-white"
+      class="kamil-list min-h-0 flex-1 rounded-lg border border-outline-gray-1 bg-surface-white"
       :columns="listColumns"
       :rows="rows"
       row-key="name"
@@ -89,8 +124,8 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
-import { Button, Badge, ListView, Spinner, createListResource } from 'frappe-ui'
+import { ref, computed, onMounted } from 'vue'
+import { Button, Badge, ListView, Spinner, TextInput, createListResource, call, debounce } from 'frappe-ui'
 import Plus from '~icons/lucide/plus'
 import ArrowDown from '~icons/lucide/arrow-down'
 import CreateDialog from '@/components/dialogs/CreateDialog.vue'
@@ -99,6 +134,7 @@ import DocViewDialog from '@/components/dialogs/DocViewDialog.vue'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { usePullToRefresh } from '@/composables/usePullToRefresh'
 import Skeleton from '@/components/Skeleton.vue'
+import ComboField from '@/components/ComboField.vue'
 import { haptic } from '@/utils/haptics'
 
 const props = defineProps({
@@ -119,6 +155,28 @@ const showView = ref(false)
 const viewName = ref('')
 
 const isMobile = useIsMobile()
+
+const DOT = {
+  green: 'bg-green-500',
+  blue: 'bg-blue-500',
+  orange: 'bg-orange-500',
+  amber: 'bg-amber-500',
+}
+const kpis = ref([])
+const kpiCurrency = ref('KES')
+async function loadKpis() {
+  try {
+    const r = await call('kamil.api.get_list_kpis', { doctype: props.doctype })
+    kpis.value = r?.kpis || []
+    kpiCurrency.value = r?.currency || 'KES'
+  } catch (e) {
+    kpis.value = []
+  }
+}
+onMounted(loadKpis)
+function kpiValue(k) {
+  return k.money ? fmtCurrency(k.value, kpiCurrency.value) : new Intl.NumberFormat('en-KE').format(k.value || 0)
+}
 
 const canCreate = computed(() => !!props.createConfig || props.special === 'payment')
 const newLabel = computed(() =>
@@ -147,6 +205,7 @@ function openNew() {
 }
 function onCreated() {
   list.reload()
+  loadKpis()
 }
 
 const queryFields = computed(() => {
@@ -185,6 +244,50 @@ const { distance: ptrDistance, refreshing: ptrRefreshing } = usePullToRefresh(ro
   list.reload()
   return new Promise((r) => setTimeout(r, 700))
 })
+
+const search = ref('')
+const statusValue = ref('')
+const statusOptions = ref([])
+
+async function loadStatuses() {
+  try {
+    statusOptions.value = (await call('kamil.api.get_status_options', { doctype: props.doctype })) || []
+  } catch (e) {
+    statusOptions.value = []
+  }
+}
+onMounted(loadStatuses)
+
+function applyFilters() {
+  const f = { ...props.filters }
+  if (statusValue.value) f.status = statusValue.value
+  list.filters = f
+
+  const q = (search.value || '').trim()
+  const ors = []
+  if (q) {
+    ors.push(['name', 'like', `%${q}%`])
+    if (partyField.value) ors.push([partyField.value, 'like', `%${q}%`])
+  }
+  list.orFilters = ors.length ? ors : null
+
+  list.start = 0
+  list.reload()
+}
+const debouncedApply = debounce(applyFilters, 350)
+function onSearchInput(v) {
+  search.value = v ?? ''
+  debouncedApply()
+}
+function onStatus(v) {
+  statusValue.value = v || ''
+  applyFilters()
+}
+function clearFilters() {
+  search.value = ''
+  statusValue.value = ''
+  applyFilters()
+}
 
 function openDoc(row) {
   haptic()

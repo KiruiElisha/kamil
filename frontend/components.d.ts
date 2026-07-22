@@ -18,6 +18,7 @@ declare module 'vue' {
     ItemsTable: typeof import('./src/components/ItemsTable.vue')['default']
     LinkField: typeof import('./src/components/LinkField.vue')['default']
     PaymentDialog: typeof import('./src/components/dialogs/PaymentDialog.vue')['default']
+    RankList: typeof import('./src/components/RankList.vue')['default']
     RecentList: typeof import('./src/components/RecentList.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']

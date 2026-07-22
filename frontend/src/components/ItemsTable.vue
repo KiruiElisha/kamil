@@ -41,8 +41,8 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
-import { Button, FormControl } from 'frappe-ui'
+import { ref, watch, computed } from 'vue'
+import { Button, FormControl, call } from 'frappe-ui'
 import LinkField from '@/components/LinkField.vue'
 import ComboField from '@/components/ComboField.vue'
 import Plus from '~icons/lucide/plus'
@@ -52,7 +52,33 @@ const props = defineProps({
   title: String,
   columns: { type: Array, required: true },
   modelValue: { type: Array, default: () => [] },
+  // context used to look up the right price for a picked item
+  doctype: { type: String, default: '' },
+  party: { type: String, default: '' },
+  company: { type: String, default: '' },
 })
+
+const rateCol = computed(() => props.columns.find((c) => c.fieldtype === 'currency'))
+
+async function fetchRate(i, itemCode) {
+  if (!props.doctype || !itemCode) return
+  try {
+    const r = await call('kamil.api.get_item_rate', {
+      item_code: itemCode,
+      doctype: props.doctype,
+      party: props.party || null,
+      company: props.company || null,
+    })
+    const row = rows.value[i]
+    // the user may have changed the row while we were fetching
+    if (!row || row.item_code !== itemCode) return
+    if (rateCol.value && !row[rateCol.value.fieldname]) row[rateCol.value.fieldname] = r?.rate || 0
+    if (!row.qty) row.qty = 1
+    sync()
+  } catch (e) {
+    /* leave the rate for manual entry */
+  }
+}
 const emit = defineEmits(['update:modelValue'])
 
 const rows = ref(props.modelValue.length ? [...props.modelValue] : [{}])
@@ -63,6 +89,7 @@ function sync() {
 function set(i, field, val) {
   rows.value[i][field] = val
   sync()
+  if (field === 'item_code' && val) fetchRate(i, val)
 }
 function add() {
   rows.value.push({})
