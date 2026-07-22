@@ -41,10 +41,12 @@
         <div class="grid gap-4 lg:grid-cols-2"><Skeleton class="h-64" /><Skeleton class="h-64" /></div>
       </template>
       <template v-else-if="ana.data">
-        <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
           <Stat :label="tab === 1 ? 'Sales (12 mo)' : 'Purchases (12 mo)'" :value="fmtMoney(ana.data.total_12m, ana.data.currency)" />
           <Stat :label="tab === 1 ? 'Invoices' : 'Bills'" :value="fmtNum(ana.data.count_12m)" />
           <Stat label="Average value" :value="fmtMoney(ana.data.avg_value, ana.data.currency)" />
+          <Stat label="Largest" :value="fmtMoney(ana.data.largest, ana.data.currency)" />
+          <Stat :label="tab === 1 ? 'Customers' : 'Suppliers'" :value="fmtNum(ana.data.unique_parties)" />
           <Stat :label="tab === 1 ? 'Top customer' : 'Top supplier'" :value="ana.data.top_parties?.[0]?.label || '—'" small />
         </div>
 
@@ -53,6 +55,9 @@
         </div>
 
         <div class="grid gap-4 lg:grid-cols-2">
+          <div class="h-72 rounded-xl border border-outline-gray-1 bg-surface-white p-3">
+            <DonutChart :config="anaDonut" />
+          </div>
           <RankList
             :title="tab === 1 ? 'Top Customers' : 'Top Suppliers'"
             :rows="ana.data.top_parties || []"
@@ -60,13 +65,13 @@
             :bar-class="tab === 1 ? 'bg-green-500' : 'bg-blue-500'"
             :party-type="tab === 1 ? 'Customer' : 'Supplier'"
           />
-          <RankList
-            title="Top Items"
-            :rows="ana.data.top_items || []"
-            :currency="ana.data.currency"
-            :bar-class="tab === 1 ? 'bg-emerald-500' : 'bg-indigo-500'"
-          />
         </div>
+        <RankList
+          title="Top Items"
+          :rows="ana.data.top_items || []"
+          :currency="ana.data.currency"
+          :bar-class="tab === 1 ? 'bg-emerald-500' : 'bg-indigo-500'"
+        />
       </template>
     </template>
 
@@ -82,6 +87,14 @@
           <Stat label="Total payable" :value="fmtMoney(arap.data.payable.total, arap.data.currency)" />
         </div>
         <div class="grid gap-4 lg:grid-cols-2">
+          <div class="h-72 rounded-xl border border-outline-gray-1 bg-surface-white p-3">
+            <DonutChart :config="donut(arap.data.receivable.buckets, 'Receivables ageing')" />
+          </div>
+          <div class="h-72 rounded-xl border border-outline-gray-1 bg-surface-white p-3">
+            <DonutChart :config="donut(arap.data.payable.buckets, 'Payables ageing')" />
+          </div>
+        </div>
+        <div class="grid gap-4 lg:grid-cols-2">
           <RankList title="Receivables ageing" :rows="arap.data.receivable.buckets" :currency="arap.data.currency" bar-class="bg-amber-500" />
           <RankList title="Payables ageing" :rows="arap.data.payable.buckets" :currency="arap.data.currency" bar-class="bg-red-500" />
           <RankList title="Top outstanding customers" :rows="arap.data.receivable.top" :currency="arap.data.currency" bar-class="bg-amber-500" party-type="Customer" />
@@ -89,12 +102,46 @@
         </div>
       </template>
     </template>
+
+    <!-- ---------------- Inventory ---------------- -->
+    <template v-else-if="tab === 4">
+      <template v-if="inventory.loading">
+        <div class="grid grid-cols-2 gap-3 sm:grid-cols-5"><Skeleton v-for="n in 5" :key="n" class="h-[86px]" /></div>
+        <div class="grid gap-4 lg:grid-cols-2"><Skeleton class="h-72" /><Skeleton class="h-72" /></div>
+      </template>
+      <template v-else-if="inventory.data">
+        <div class="grid grid-cols-2 gap-3 sm:grid-cols-5">
+          <Stat label="Stock value" :value="fmtMoney(inventory.data.total_value, inventory.data.currency)" />
+          <Stat label="Active SKUs" :value="fmtNum(inventory.data.active_skus)" />
+          <Stat label="Items in stock" :value="fmtNum(inventory.data.stocked_skus)" />
+          <Stat label="Out of stock" :value="fmtNum(inventory.data.out_of_stock)" />
+          <Stat label="Low stock" :value="fmtNum(inventory.data.low_stock)" />
+        </div>
+        <div class="grid gap-4 lg:grid-cols-2">
+          <div class="h-72 rounded-xl border border-outline-gray-1 bg-surface-white p-3">
+            <DonutChart :config="donut(inventory.data.by_group, 'Stock value by item group')" />
+          </div>
+          <RankList
+            title="Top items by stock value"
+            :rows="inventory.data.top_items || []"
+            :currency="inventory.data.currency"
+            bar-class="bg-violet-500"
+          />
+        </div>
+        <RankList
+          title="Stock value by item group"
+          :rows="inventory.data.by_group || []"
+          :currency="inventory.data.currency"
+          bar-class="bg-blue-500"
+        />
+      </template>
+    </template>
   </div>
 </template>
 
 <script setup>
 import { computed, ref, watch, h } from 'vue'
-import { AxisChart, Tabs, createResource, call } from 'frappe-ui'
+import { AxisChart, DonutChart, Tabs, createResource, call } from 'frappe-ui'
 import DollarSign from '~icons/lucide/dollar-sign'
 import ShoppingCart from '~icons/lucide/shopping-cart'
 import TrendingUp from '~icons/lucide/trending-up'
@@ -105,6 +152,7 @@ import ShoppingBag from '~icons/lucide/shopping-bag'
 import Receipt from '~icons/lucide/receipt'
 import LayoutDashboard from '~icons/lucide/layout-dashboard'
 import Wallet from '~icons/lucide/wallet'
+import Package from '~icons/lucide/package'
 import RecentList from '@/components/RecentList.vue'
 import RankList from '@/components/RankList.vue'
 import Skeleton from '@/components/Skeleton.vue'
@@ -115,6 +163,7 @@ const tabs = [
   { label: 'Sales', icon: TrendingUp },
   { label: 'Purchases', icon: ShoppingBag },
   { label: 'Receivables & Payables', icon: Wallet },
+  { label: 'Inventory', icon: Package },
 ]
 
 // Small inline stat card
@@ -138,6 +187,7 @@ const loading = computed(() => hub.loading && !hub.data)
 const sales = ref({ loading: false, data: null })
 const purchases = ref({ loading: false, data: null })
 const arap = ref({ loading: false, data: null })
+const inventory = ref({ loading: false, data: null })
 const ana = computed(() => (tab.value === 1 ? sales.value : purchases.value))
 
 async function load(store, method) {
@@ -158,6 +208,7 @@ watch(
     if (t === 1) load(sales, 'kamil.api.get_sales_analytics')
     else if (t === 2) load(purchases, 'kamil.api.get_purchase_analytics')
     else if (t === 3) load(arap, 'kamil.api.get_ar_ap_analytics')
+    else if (t === 4) load(inventory, 'kamil.api.get_inventory_analytics')
   },
   { immediate: true },
 )
@@ -210,6 +261,24 @@ const anaChart = computed(() => ({
   yAxis: { title: '' },
   series: [{ name: 'total', type: 'bar', color: tab.value === 1 ? '#16a34a' : '#2563eb' }],
 }))
+
+const anaDonut = computed(() => ({
+  data: ana.value.data?.top_items || [],
+  title: tab.value === 1 ? 'Revenue share by item' : 'Spend share by item',
+  categoryColumn: 'label',
+  valueColumn: 'value',
+  maxSliceCount: 8,
+}))
+
+function donut(rows, title) {
+  return {
+    data: (rows || []).filter((r) => r.value),
+    title,
+    categoryColumn: 'label',
+    valueColumn: 'value',
+    maxSliceCount: 8,
+  }
+}
 
 function fmtMoney(v, c) {
   try {

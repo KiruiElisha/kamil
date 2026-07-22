@@ -777,22 +777,29 @@ def _last_12_months():
 
 
 def _party_totals(doctype, party_field, company, start, end):
-	"""Top parties by invoiced value."""
+	"""Top parties by invoiced value. Uses get_list (dict-aggregates) so role AND
+	user permissions apply. Returns (top_rows, unique_party_count)."""
 	if not _can_read(doctype):
-		return []
-	clause, params = _company_clause(company)
-	params["start"] = start
-	params["end"] = end
-	rows = frappe.db.sql(
-		f"""select {party_field} as label, sum(base_grand_total) as value
-		from `tab{doctype}`
-		where docstatus = 1 and is_return = 0
-			and posting_date >= %(start)s and posting_date <= %(end)s{clause}
-		group by {party_field} order by value desc limit 8""",
-		params,
-		as_dict=True,
+		return [], 0
+	filters = [
+		["docstatus", "=", 1],
+		["is_return", "=", 0],
+		["posting_date", ">=", start],
+		["posting_date", "<=", end],
+	]
+	if company:
+		filters.append(["company", "=", company])
+	rows = frappe.get_list(
+		doctype,
+		filters=filters,
+		fields=[party_field, {"SUM": "base_grand_total"}],
+		group_by=party_field,
+		limit_page_length=0,
 	)
-	return [{"label": r.label or "—", "value": flt(r.value)} for r in rows]
+	key = "SUM(`base_grand_total`)"
+	out = [{"label": r.get(party_field) or "—", "value": flt(r.get(key))} for r in rows]
+	out.sort(key=lambda x: -x["value"])
+	return out[:8], len(out)
 
 
 def _item_totals(doctype, company, start, end):
@@ -891,6 +898,21 @@ def _invoice_analytics(doctype, party_field, company):
 	monthly = [{"label": m["label"], "total": by_month.get(m["key"], 0.0)} for m in months]
 	total_12m = sum(m["total"] for m in monthly)
 
+	top_parties, unique_parties = _party_totals(doctype, party_field, company, start, end)
+
+	largest = 0.0
+	if _can_read(doctype):
+		agg_filters = [
+			["docstatus", "=", 1],
+			["is_return", "=", 0],
+			["posting_date", ">=", start],
+			["posting_date", "<=", end],
+		]
+		if company:
+			agg_filters.append(["company", "=", company])
+		agg = frappe.get_list(doctype, filters=agg_filters, fields=[{"MAX": "base_grand_total"}])
+		largest = flt(agg[0].get("MAX(`base_grand_total`)")) if agg else 0.0
+
 	return {
 		"company": company,
 		"currency": _currency_for(company),
@@ -898,7 +920,9 @@ def _invoice_analytics(doctype, party_field, company):
 		"total_12m": total_12m,
 		"count_12m": count,
 		"avg_value": (total_12m / count) if count else 0.0,
-		"top_parties": _party_totals(doctype, party_field, company, start, end),
+		"top_parties": top_parties,
+		"unique_parties": unique_parties,
+		"largest": largest,
 		"top_items": _item_totals(doctype, company, start, end),
 	}
 
@@ -1163,4 +1187,88 @@ def get_item_rate(
 		"price_list": price_list,
 		"item_name": item.item_name,
 		"uom": item.stock_uom,
+	}
+
+
+@frappe.whitelist()
+def get_inventory_analytics(company: str | None = None) -> dict:
+	"""Stock KPIs + distribution. Uses get_list throughout so permissions apply."""
+	company = _resolve_company(company)
+	empty = {
+		"company": company,
+		"currency": _currency_for(company),
+		"total_value": 0.0,
+		"active_skus": 0,
+		"stocked_skus": 0,
+		"out_of_stock": 0,
+		"low_stock": 0,
+		"by_group": [],
+		"top_items": [],
+	}
+	if not (_can_read("Bin") and _can_read("Item")):
+		return empty
+
+	bin_filters = {}
+	if company:
+		warehouses = frappe.get_all("Warehouse", filters={"company": company, "is_group": 0}, pluck="name")
+		if warehouses:
+			bin_filters["warehouse"] = ["in", warehouses]
+
+	bins = frappe.get_list(
+		"Bin",
+		filters=bin_filters,
+		fields=["item_code", {"SUM": "actual_qty"}, {"SUM": "stock_value"}],
+		group_by="item_code",
+		limit_page_length=0,
+	)
+	qty_key, val_key = "SUM(`actual_qty`)", "SUM(`stock_value`)"
+	rows = [
+		{"item": b.get("item_code"), "qty": flt(b.get(qty_key)), "value": flt(b.get(val_key))}
+		for b in bins
+		if b.get("item_code")
+	]
+
+	items = {}
+	codes = [r["item"] for r in rows]
+	if codes:
+		for it in frappe.get_list(
+			"Item",
+			filters={"name": ["in", codes]},
+			fields=["name", "item_name", "item_group", "safety_stock"],
+			limit_page_length=0,
+		):
+			items[it.name] = it
+
+	active = frappe.get_list("Item", filters={"disabled": 0}, fields=[{"COUNT": "*"}])
+	active_skus = (active[0].get("COUNT(*)") if active else 0) or 0
+
+	by_group = {}
+	for r in rows:
+		group = (items.get(r["item"]) or {}).get("item_group") or "—"
+		by_group[group] = by_group.get(group, 0.0) + r["value"]
+
+	def _low(r):
+		safety = flt((items.get(r["item"]) or {}).get("safety_stock"))
+		return r["qty"] > 0 and safety > 0 and r["qty"] <= safety
+
+	top = sorted(rows, key=lambda r: -r["value"])[:8]
+	return {
+		"company": company,
+		"currency": _currency_for(company),
+		"total_value": sum(r["value"] for r in rows),
+		"active_skus": active_skus,
+		"stocked_skus": len(rows),
+		"out_of_stock": len([r for r in rows if r["qty"] <= 0]),
+		"low_stock": len([r for r in rows if _low(r)]),
+		"by_group": sorted(
+			[{"label": k, "value": v} for k, v in by_group.items()], key=lambda x: -x["value"]
+		)[:8],
+		"top_items": [
+			{
+				"label": (items.get(r["item"]) or {}).get("item_name") or r["item"],
+				"value": r["value"],
+				"sub": f"{r['qty']:g} in stock",
+			}
+			for r in top
+		],
 	}
