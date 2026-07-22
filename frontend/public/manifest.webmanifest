@@ -1,7 +1,7 @@
 {
   "name": "Kamil Energy",
   "short_name": "Kamil",
-  "description": "Jemkas Pharma Kenya Ltd — Sales, Purchases & Stock",
+  "description": "Sales, Purchases & Stock",
   "start_url": "/kamil",
   "scope": "/",
   "display": "standalone",

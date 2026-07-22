@@ -60,8 +60,6 @@ import Menu from '~icons/lucide/menu'
 import { LISTS, SECTIONS, findList } from '@/data/doctypes.js'
 import { REPORTS, findReport } from '@/data/reports.js'
 import BarChart from '~icons/lucide/bar-chart-3'
-import { getDefaults } from '@/data/defaults.js'
-import UserIcon from '~icons/lucide/user'
 import CreateDialog from '@/components/dialogs/CreateDialog.vue'
 import PaymentDialog from '@/components/dialogs/PaymentDialog.vue'
 import InvoiceFromOrderDialog from '@/components/dialogs/InvoiceFromOrderDialog.vue'
@@ -74,9 +72,6 @@ const router = useRouter()
 const user = createResource({ url: 'frappe.auth.get_logged_user', auto: true })
 
 const isMobile = useIsMobile()
-const company = ref('')
-getDefaults().then((d) => (company.value = d?.company || ''))
-
 const mobileNav = ref(false)
 watch(() => route.fullPath, () => (mobileNav.value = false))
 function openDrawer() {
@@ -137,10 +132,9 @@ const createOptions = [
 
 const header = computed(() => ({
   title: 'Kamil Energy',
-  subtitle: company.value || 'Jemkas Pharma Kenya Ltd',
+  subtitle: user.data || '',
   logo: '/assets/kamil/frontend/icon-192.png',
   menuItems: [
-    { label: user.data || 'Signed in', icon: UserIcon, onClick: () => {} },
     { label: 'Open ERPNext Desk', icon: ExternalLink, onClick: () => (window.location.href = '/app') },
     { label: 'Logout', icon: LogOut, onClick: () => (window.location.href = '/app/logout') },
   ],
