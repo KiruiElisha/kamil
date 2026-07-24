@@ -57,6 +57,7 @@ import ExternalLink from '~icons/lucide/external-link'
 import LogOut from '~icons/lucide/log-out'
 import Plus from '~icons/lucide/plus'
 import Menu from '~icons/lucide/menu'
+import MessageSquare from '~icons/lucide/message-square'
 import { LISTS, SECTIONS, findList } from '@/data/doctypes.js'
 import { REPORTS, findReport } from '@/data/reports.js'
 import BarChart from '~icons/lucide/bar-chart-3'
@@ -74,6 +75,11 @@ const user = createResource({ url: 'frappe.auth.get_logged_user', auto: true })
 const isMobile = useIsMobile()
 const mobileNav = ref(false)
 watch(() => route.fullPath, () => (mobileNav.value = false))
+function openRaven() {
+  haptic()
+  window.open('/raven', '_blank')
+}
+
 function openDrawer() {
   haptic()
   mobileNav.value = true

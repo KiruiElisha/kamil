@@ -1,7 +1,7 @@
 <template>
   <div class="mx-auto flex w-full min-h-0 max-w-6xl flex-1 flex-col gap-3 p-3 md:p-5">
     <template v-if="cfg">
-      <Tabs v-model="tab" :tabs="tabs" />
+      <Tabs class="!flex-none" v-model="tab" :tabs="tabs" />
       <DocTable v-show="tab === 0" :key="cfg.doctype" v-bind="tableProps" />
       <ListInsights v-if="tab === 1" :key="cfg.doctype + '-insights'" :doctype="cfg.doctype" :title="cfg.title" />
     </template>

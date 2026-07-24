@@ -30,6 +30,22 @@
   min-width: 0;
 }
 
+/* Denser list rows on desktop (mobile uses the card layout, leave it alone) */
+@media (min-width: 768px) {
+  .kamil-list {
+    font-size: 0.8125rem; /* 13px */
+    line-height: 1.15rem;
+  }
+  .kamil-list .text-base {
+    font-size: 0.8125rem;
+    line-height: 1.15rem;
+  }
+  .kamil-list .text-sm {
+    font-size: 0.75rem; /* 12px headers */
+    line-height: 1.05rem;
+  }
+}
+
 /* Tap feedback on touch devices */
 @media (hover: none) {
   button:active,

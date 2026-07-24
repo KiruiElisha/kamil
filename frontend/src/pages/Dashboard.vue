@@ -1,6 +1,6 @@
 <template>
   <div class="mx-auto w-full min-h-0 max-w-6xl flex-1 space-y-4 overflow-auto p-3 md:p-5">
-    <Tabs v-model="tab" :tabs="tabs" />
+    <Tabs class="!flex-none" v-model="tab" :tabs="tabs" />
 
     <!-- ---------------- Overview ---------------- -->
     <template v-if="tab === 0">

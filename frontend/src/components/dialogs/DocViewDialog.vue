@@ -40,6 +40,21 @@
           </div>
         </div>
 
+        <!-- Cancel confirmation -->
+        <div v-if="cancelOpen" class="space-y-3 rounded-lg border border-red-200 bg-red-50 p-3">
+          <div class="flex items-center gap-2 text-sm font-semibold text-red-700">
+            <Ban class="h-4 w-4" /> Cancel this document?
+          </div>
+          <p class="text-sm text-ink-gray-7">
+            Cancelling reverses its accounting and stock entries. This cannot be undone —
+            you would need to amend the document instead.
+          </p>
+          <div class="flex justify-end gap-2">
+            <Button label="Keep it" @click="cancelOpen = false" />
+            <Button theme="red" variant="solid" label="Yes, cancel it" :loading="cancelling" @click="cancelDoc" />
+          </div>
+        </div>
+
         <!-- Print panel -->
         <div v-if="printOpen" class="space-y-3 rounded-lg border border-outline-gray-1 bg-surface-gray-1 p-3">
           <div class="flex items-center gap-2 text-sm font-semibold text-ink-gray-8">
@@ -55,8 +70,10 @@
 
         <!-- WhatsApp panel -->
         <div v-if="waOpen" class="space-y-3 rounded-lg border border-outline-gray-1 bg-surface-gray-1 p-3">
-          <div class="flex items-center gap-2 text-sm font-semibold text-ink-gray-8">
+          <div class="flex flex-wrap items-center gap-2 text-sm font-semibold text-ink-gray-8">
             <MessageCircle class="h-4 w-4 text-green-600" /> Send via WhatsApp
+            <Badge v-if="waSender" theme="green" :label="`from ${waSender}`" />
+            <span v-else class="text-xs font-normal text-ink-gray-5">no sender configured</span>
           </div>
           <ComboField v-if="senderOptions.length" label="Send from" :options="senderOptions" :modelValue="waSender" @update:modelValue="(v) => (waSender = v || '')" />
           <ComboField label="Attach print format" :options="printFormats" :modelValue="waFormat" @update:modelValue="(v) => (waFormat = v || 'Standard')" />
@@ -80,6 +97,9 @@
               <template #prefix><Plus class="h-4 w-4" /></template>
             </Button>
           </Dropdown>
+          <Button v-if="canCancel" theme="red" label="Cancel doc" @click="cancelOpen = !cancelOpen">
+            <template #prefix><Ban class="h-4 w-4" /></template>
+          </Button>
           <Button label="Open in ERPNext" @click="openDesk">
             <template #prefix><ExternalLink class="h-4 w-4" /></template>
           </Button>
@@ -89,7 +109,7 @@
           <Button label="Print" @click="printOpen = !printOpen">
             <template #prefix><Printer class="h-4 w-4" /></template>
           </Button>
-          <Button label="WhatsApp" @click="toggleWhatsApp">
+          <Button :label="waButtonLabel" @click="toggleWhatsApp">
             <template #prefix><MessageCircle class="h-4 w-4 text-green-600" /></template>
           </Button>
         </div>
@@ -111,6 +131,7 @@ import MessageCircle from '~icons/lucide/message-circle'
 import Printer from '~icons/lucide/printer'
 import BookOpen from '~icons/lucide/book-open'
 import Plus from '~icons/lucide/plus'
+import Ban from '~icons/lucide/ban'
 import ComboField from '@/components/ComboField.vue'
 import { findList } from '@/data/doctypes.js'
 
@@ -144,6 +165,8 @@ const transitions = ref([])
 const printFormats = ref([{ label: 'Standard', value: 'Standard' }])
 const printFormat = ref('Standard')
 const printOpen = ref(false)
+const cancelOpen = ref(false)
+const cancelling = ref(false)
 
 const waOpen = ref(false)
 const waPhone = ref('')
@@ -156,6 +179,7 @@ const waSender = ref('')
 const waFormat = ref('Standard')
 
 const childRows = computed(() => (doc.value && curChild.value ? doc.value[curChild.value.fieldname] || [] : []))
+const canCancel = computed(() => doc.value && doc.value.docstatus === 1)
 const canSubmit = computed(() => doc.value && doc.value.docstatus === 0 && !NON_SUBMITTABLE.includes(curDoctype.value))
 const partyLink = computed(() => {
   const d = doc.value
@@ -165,6 +189,7 @@ const partyLink = computed(() => {
   if (d.party_type && d.party) return { party_type: d.party_type, party: d.party }
   return null
 })
+const waButtonLabel = computed(() => (waSender.value ? `WhatsApp · ${waSender.value}` : 'WhatsApp'))
 const transitionOptions = computed(() =>
   transitions.value.map((t) => ({ label: `Create ${t.target}`, onClick: () => makeNext(t.target) })),
 )
@@ -172,6 +197,7 @@ const transitionOptions = computed(() =>
 function resetPanels() {
   error.value = ''
   printOpen.value = false
+  cancelOpen.value = false
   waOpen.value = false
   waResult.value = ''
 }
@@ -263,6 +289,21 @@ async function submit() {
     error.value = e?.messages?.join(', ') || e?.message || 'Could not submit document.'
   } finally {
     submitting.value = false
+  }
+}
+
+async function cancelDoc() {
+  cancelling.value = true
+  error.value = ''
+  try {
+    await call('kamil.api.cancel_document', { doctype: curDoctype.value, name: curName.value })
+    cancelOpen.value = false
+    emit('submitted')
+    await load()
+  } catch (e) {
+    error.value = e?.messages?.join(', ') || e?.message || 'Could not cancel the document.'
+  } finally {
+    cancelling.value = false
   }
 }
 

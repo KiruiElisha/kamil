@@ -548,15 +548,33 @@ def create_document(doctype: str, values: str | dict | None = None):
 
 @frappe.whitelist()
 def get_create_defaults() -> dict:
-	"""Preloaded defaults for the create modals (company, default warehouse)."""
-	company = frappe.defaults.get_user_default("Company") or frappe.db.get_single_value(
-		"Global Defaults", "default_company"
-	)
-	warehouse = frappe.db.get_value("Company", company, "default_warehouse") if company else None
-	return {
-		"company": company,
-		"warehouse": warehouse,
-	}
+	"""Preloaded defaults for the create modals (company, default warehouse).
+
+	`Company.default_warehouse` does not exist in this ERPNext version, so the
+	warehouse falls back to Stock Settings and finally to any non-group warehouse
+	of the company. Every lookup is guarded so this never breaks the modals.
+	"""
+	company = None
+	warehouse = None
+	try:
+		company = _resolve_company(None)
+	except Exception:
+		company = None
+
+	try:
+		default_wh = frappe.db.get_single_value("Stock Settings", "default_warehouse")
+		if default_wh and (
+			not company or frappe.db.get_value("Warehouse", default_wh, "company") == company
+		):
+			warehouse = default_wh
+		if not warehouse and company:
+			warehouse = frappe.db.get_value(
+				"Warehouse", {"company": company, "is_group": 0}, "name", order_by="creation asc"
+			)
+	except Exception:
+		warehouse = None
+
+	return {"company": company, "warehouse": warehouse}
 
 
 @frappe.whitelist()
@@ -954,73 +972,88 @@ _KPI_AMOUNT_FIELDS = ("base_grand_total", "grand_total", "base_paid_amount", "pa
 _KPI_DATE_FIELDS = ("posting_date", "transaction_date", "schedule_date")
 
 
+def _agg_count(doctype, filters):
+	try:
+		rows = frappe.get_list(doctype, filters=filters, fields=[{"COUNT": "*"}])
+		return (rows[0].get("COUNT(*)") if rows else 0) or 0
+	except Exception:
+		return 0
+
+
+def _agg_sum(doctype, filters, field):
+	try:
+		rows = frappe.get_list(doctype, filters=filters, fields=[{"SUM": field}])
+		return flt(rows[0].get(f"SUM(`{field}`)")) if rows else 0.0
+	except Exception:
+		return 0.0
+
+
 @frappe.whitelist()
 def get_list_kpis(doctype: str, company: str | None = None) -> dict:
-	"""Small KPI strip shown above each list — adapts to whatever fields the doctype has."""
+	"""Exactly four KPI cards above each list, adapted to the doctype's fields.
+	Uses frappe.get_list aggregates so role AND user permissions apply."""
 	if not frappe.db.exists("DocType", doctype) or not _can_read(doctype):
 		return {"currency": None, "kpis": []}
 
 	meta = frappe.get_meta(doctype)
 	has_company = meta.has_field("company")
 	company = _resolve_company(company) if has_company else None
-	currency = _currency_for(company)
+	base = [["company", "=", company]] if (has_company and company) else []
 
-	filters = {}
-	if has_company and company:
-		filters["company"] = company
-
-	where = "1=1"
-	params = {}
-	if has_company and company:
-		where = "company = %(company)s"
-		params["company"] = company
-
-	date_field = next((f for f in _KPI_DATE_FIELDS if meta.has_field(f)), "creation")
 	amount_field = next((f for f in _KPI_AMOUNT_FIELDS if meta.has_field(f)), None)
+	date_field = next((f for f in _KPI_DATE_FIELDS if meta.has_field(f)), None)
+	submittable = meta.is_submittable
 
-	start = frappe.utils.get_first_day(nowdate())
-	end = frappe.utils.get_last_day(nowdate())
-	kpis = []
+	month_start = str(frappe.utils.get_first_day(nowdate()))
+	month_end = str(frappe.utils.get_last_day(nowdate()))
+	year_start = str(frappe.utils.get_year_start(nowdate()))
 
-	def _scalar(sql, p):
-		try:
-			return frappe.db.sql(sql, p)[0][0] or 0
-		except Exception:
-			return 0
+	def period(field, start, end=None):
+		f = base + [[field, ">=", start]]
+		if end:
+			f.append([field, "<=", end])
+		return f
 
-	if amount_field:
-		p = dict(params, start=start, end=end)
-		total = _scalar(
-			f"""select sum({amount_field}) from `tab{doctype}`
-			where docstatus = 1 and {date_field} between %(start)s and %(end)s and {where}""",
-			p,
-		)
-		count = _scalar(
-			f"""select count(name) from `tab{doctype}`
-			where docstatus = 1 and {date_field} between %(start)s and %(end)s and {where}""",
-			p,
-		)
-		kpis.append({"label": "This month", "value": flt(total), "money": True, "color": "green"})
-		kpis.append({"label": "This month (count)", "value": count, "money": False, "color": "blue"})
-	else:
-		kpis.append({"label": "Total records", "value": frappe.db.count(doctype, filters), "money": False, "color": "blue"})
-
-	if meta.is_submittable:
-		kpis.append(
-			{"label": "Drafts", "value": frappe.db.count(doctype, {**filters, "docstatus": 0}), "money": False, "color": "orange"}
-		)
+	# Candidates in priority order; the first four available are shown.
+	candidates = []
+	if amount_field and date_field:
+		submitted_month = period(date_field, month_start, month_end) + [["docstatus", "=", 1]]
+		candidates.append({"label": "This month", "value": _agg_sum(doctype, submitted_month, amount_field), "money": True, "color": "green"})
+		candidates.append({"label": "This month (count)", "value": _agg_count(doctype, submitted_month), "money": False, "color": "blue"})
 
 	if meta.has_field("outstanding_amount"):
-		outstanding = _scalar(
-			f"""select sum(outstanding_amount) from `tab{doctype}`
-			where docstatus = 1 and outstanding_amount > 0 and {where}""",
-			params,
-		)
-		kpis.append({"label": "Outstanding", "value": flt(outstanding), "money": True, "color": "amber"})
-	elif meta.has_field("disabled"):
-		kpis.append({"label": "Active", "value": frappe.db.count(doctype, {**filters, "disabled": 0}), "money": False, "color": "green"})
+		f = base + [["docstatus", "=", 1], ["outstanding_amount", ">", 0]]
+		candidates.append({"label": "Outstanding", "value": _agg_sum(doctype, f, "outstanding_amount"), "money": True, "color": "amber"})
 
-	return {"currency": currency, "kpis": kpis}
+	if submittable:
+		candidates.append({"label": "Drafts", "value": _agg_count(doctype, base + [["docstatus", "=", 0]]), "money": False, "color": "orange"})
+
+	if amount_field and date_field:
+		f = period(date_field, year_start) + [["docstatus", "=", 1]]
+		candidates.append({"label": "This year", "value": _agg_sum(doctype, f, amount_field), "money": True, "color": "green"})
+
+	if submittable:
+		candidates.append({"label": "Submitted", "value": _agg_count(doctype, base + [["docstatus", "=", 1]]), "money": False, "color": "blue"})
+
+	if meta.has_field("disabled"):
+		candidates.append({"label": "Active", "value": _agg_count(doctype, base + [["disabled", "=", 0]]), "money": False, "color": "green"})
+
+	candidates.append({"label": "Total records", "value": _agg_count(doctype, base), "money": False, "color": "blue"})
+
+	if meta.has_field("disabled"):
+		candidates.append({"label": "Disabled", "value": _agg_count(doctype, base + [["disabled", "=", 1]]), "money": False, "color": "orange"})
+
+	candidates.append({"label": "Added this month", "value": _agg_count(doctype, base + [["creation", ">=", month_start]]), "money": False, "color": "amber"})
+
+	return {"currency": _currency_for(company), "kpis": candidates[:4]}
+
+
+@frappe.whitelist()
+def cancel_document(doctype: str, name: str) -> dict:
+	"""Cancel a submitted document (reverses its ledger entries)."""
+	doc = frappe.get_doc(doctype, name)
+	doc.cancel()
+	return {"name": doc.name, "docstatus": doc.docstatus}
 
 
 @frappe.whitelist()
@@ -1393,3 +1426,10 @@ def get_list_analytics(doctype: str, company: str | None = None) -> dict:
 		"monthly": monthly,
 		"party_type": party_type,
 	}
+
+
+@frappe.whitelist()
+def get_app_links() -> dict:
+	"""Optional external app shortcuts shown in the UI (only if installed)."""
+	installed = frappe.get_installed_apps() or []
+	return {"raven": "/raven" if "raven" in installed else None}
