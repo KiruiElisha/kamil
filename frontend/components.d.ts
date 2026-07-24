@@ -17,6 +17,7 @@ declare module 'vue' {
     InvoiceFromOrderDialog: typeof import('./src/components/dialogs/InvoiceFromOrderDialog.vue')['default']
     ItemsTable: typeof import('./src/components/ItemsTable.vue')['default']
     LinkField: typeof import('./src/components/LinkField.vue')['default']
+    ListInsights: typeof import('./src/components/ListInsights.vue')['default']
     PaymentDialog: typeof import('./src/components/dialogs/PaymentDialog.vue')['default']
     RankList: typeof import('./src/components/RankList.vue')['default']
     RecentList: typeof import('./src/components/RecentList.vue')['default']

@@ -1272,3 +1272,124 @@ def get_inventory_analytics(company: str | None = None) -> dict:
 			for r in top
 		],
 	}
+
+
+# doctype -> list of (label, target doctype, mapping "module.func") transitions
+_DOC_TRANSITIONS = {
+	"Quotation": [
+		("Sales Order", "Sales Order", "erpnext.selling.doctype.quotation.quotation.make_sales_order"),
+	],
+	"Sales Order": [
+		("Delivery Note", "Delivery Note", "erpnext.selling.doctype.sales_order.sales_order.make_delivery_note"),
+		("Sales Invoice", "Sales Invoice", "erpnext.selling.doctype.sales_order.sales_order.make_sales_invoice"),
+	],
+	"Delivery Note": [
+		("Sales Invoice", "Sales Invoice", "erpnext.stock.doctype.delivery_note.delivery_note.make_sales_invoice"),
+	],
+	"Material Request": [
+		("Purchase Order", "Purchase Order", "erpnext.stock.doctype.material_request.material_request.make_purchase_order"),
+		("Stock Entry", "Stock Entry", "erpnext.stock.doctype.material_request.material_request.make_stock_entry"),
+	],
+	"Purchase Order": [
+		("Purchase Receipt", "Purchase Receipt", "erpnext.buying.doctype.purchase_order.purchase_order.make_purchase_receipt"),
+		("Purchase Invoice", "Purchase Invoice", "erpnext.buying.doctype.purchase_order.purchase_order.make_purchase_invoice"),
+	],
+	"Purchase Receipt": [
+		("Purchase Invoice", "Purchase Invoice", "erpnext.stock.doctype.purchase_receipt.purchase_receipt.make_purchase_invoice"),
+	],
+}
+
+
+@frappe.whitelist()
+def get_doc_transitions(doctype: str) -> list:
+	"""Documents that can be created FROM a given doctype (needs create perm on target)."""
+	out = []
+	for label, target, _method in _DOC_TRANSITIONS.get(doctype, []):
+		if frappe.has_permission(target, "create"):
+			out.append({"label": label, "target": target})
+	return out
+
+
+@frappe.whitelist()
+def make_next_document(doctype: str, name: str, target: str) -> dict:
+	"""Map a source document to the next document in its flow and insert a draft."""
+	transition = next(
+		(t for t in _DOC_TRANSITIONS.get(doctype, []) if t[1] == target), None
+	)
+	if not transition:
+		frappe.throw(_("Cannot create {0} from {1}.").format(target, doctype))
+
+	# read source, create target
+	frappe.has_permission(doctype, "read", doc=name, throw=True)
+	frappe.has_permission(target, "create", throw=True)
+
+	method = frappe.get_attr(transition[2])
+	doc = method(name)
+	doc.insert()
+	return {"name": doc.name, "doctype": doc.doctype}
+
+
+@frappe.whitelist()
+def get_list_analytics(doctype: str, company: str | None = None) -> dict:
+	"""Per-list Insights tab: KPIs + status split + top parties + 6-month trend.
+	Aggregates use frappe.get_list so role AND user permissions apply."""
+	empty = {"currency": None, "kpis": [], "status": [], "top_parties": [], "monthly": [], "party_type": ""}
+	if not frappe.db.exists("DocType", doctype) or not _can_read(doctype):
+		return empty
+
+	meta = frappe.get_meta(doctype)
+	has_company = meta.has_field("company")
+	company = _resolve_company(company) if has_company else None
+	base = [["company", "=", company]] if (has_company and company) else []
+
+	amount_field = next((f for f in _KPI_AMOUNT_FIELDS if meta.has_field(f)), None)
+	date_field = next((f for f in _KPI_DATE_FIELDS if meta.has_field(f)), None)
+	party_field = next((f for f in ("customer", "supplier", "party_name") if meta.has_field(f)), None)
+	status_field = meta.get_field("status")
+	has_status = bool(status_field and status_field.fieldtype == "Select")
+
+	kpis = get_list_kpis(doctype, company).get("kpis", [])
+
+	status_rows = []
+	if has_status:
+		rows = frappe.get_list(
+			doctype, filters=base + [["docstatus", "<", 2]], fields=["status", {"COUNT": "*"}],
+			group_by="status", limit_page_length=0,
+		)
+		status_rows = [{"label": r.get("status") or "—", "value": r.get("COUNT(*)") or 0} for r in rows if r.get("status")]
+
+	top_parties = []
+	if party_field and amount_field:
+		rows = frappe.get_list(
+			doctype, filters=base + [["docstatus", "=", 1]], fields=[party_field, {"SUM": amount_field}],
+			group_by=party_field, limit_page_length=0,
+		)
+		sk = f"SUM(`{amount_field}`)"
+		top_parties = sorted(
+			[{"label": r.get(party_field) or "—", "value": flt(r.get(sk))} for r in rows],
+			key=lambda x: -x["value"],
+		)[:8]
+
+	monthly = []
+	if amount_field and date_field:
+		first = frappe.utils.get_first_day(nowdate())
+		sk = f"SUM(`{amount_field}`)"
+		for off in range(5, -1, -1):
+			m0 = frappe.utils.add_months(first, -off)
+			m1 = frappe.utils.get_last_day(m0)
+			rows = frappe.get_list(
+				doctype,
+				filters=base + [["docstatus", "=", 1], [date_field, ">=", str(m0)], [date_field, "<=", str(m1)]],
+				fields=[{"SUM": amount_field}],
+			)
+			monthly.append({"label": frappe.utils.formatdate(m0, "MMM"), "total": flt(rows[0].get(sk)) if rows else 0})
+
+	party_type = "Customer" if party_field == "customer" else ("Supplier" if party_field == "supplier" else "")
+	return {
+		"currency": _currency_for(company),
+		"kpis": kpis,
+		"status": status_rows,
+		"top_parties": top_parties,
+		"monthly": monthly,
+		"party_type": party_type,
+	}

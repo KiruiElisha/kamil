@@ -1,15 +1,17 @@
 <template>
-  <Dialog v-model="show" :options="{ title: name || 'Document', size: '3xl' }">
+  <Dialog v-model="show" :options="{ title: curName || 'Document', size: '3xl' }">
     <template #body-content>
       <div v-if="loading" class="p-6 text-center text-sm text-ink-gray-5">Loading…</div>
       <div v-else-if="doc" class="space-y-5">
+        <div class="text-xs font-medium uppercase tracking-wide text-ink-gray-4">{{ curDoctype }}</div>
+
         <!-- Summary -->
         <div class="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
-          <div v-for="c in columns" :key="c.field">
+          <div v-for="c in curColumns" :key="c.field">
             <div class="text-xs text-ink-gray-5">{{ c.label }}</div>
             <div class="mt-0.5 text-sm">
               <Badge v-if="c.type === 'status'" :theme="statusTheme(doc[c.field])" :label="doc[c.field] || 'Draft'" />
-              <span v-else-if="c.type === 'currency'" class="tabular-nums text-ink-gray-8">{{ money(doc[c.field], doc[currencyField]) }}</span>
+              <span v-else-if="c.type === 'currency'" class="tabular-nums text-ink-gray-8">{{ money(doc[c.field], doc[curCurrency]) }}</span>
               <span v-else-if="c.type === 'date'" class="text-ink-gray-7">{{ fmtDate(doc[c.field]) }}</span>
               <span v-else class="text-ink-gray-8">{{ doc[c.field] }}</span>
             </div>
@@ -17,19 +19,19 @@
         </div>
 
         <!-- Child rows -->
-        <div v-if="child && childRows.length" class="rounded-lg border border-outline-gray-1">
-          <div class="border-b border-outline-gray-1 px-3 py-2 text-sm font-semibold text-ink-gray-8">{{ child.title }}</div>
+        <div v-if="curChild && childRows.length" class="rounded-lg border border-outline-gray-1">
+          <div class="border-b border-outline-gray-1 px-3 py-2 text-sm font-semibold text-ink-gray-8">{{ curChild.title }}</div>
           <div class="overflow-x-auto">
             <table class="w-full min-w-[420px] text-sm">
               <thead>
                 <tr class="border-b border-outline-gray-1 text-left text-xs text-ink-gray-5">
-                  <th v-for="col in child.columns" :key="col.fieldname" class="px-3 py-1.5 font-medium">{{ col.label }}</th>
+                  <th v-for="col in curChild.columns" :key="col.fieldname" class="px-3 py-1.5 font-medium">{{ col.label }}</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="(r, i) in childRows" :key="i" class="border-b border-outline-gray-1 last:border-0">
-                  <td v-for="col in child.columns" :key="col.fieldname" class="px-3 py-1.5 text-ink-gray-7">
-                    <span v-if="col.fieldtype === 'currency'" class="tabular-nums">{{ money(r[col.fieldname], doc[currencyField]) }}</span>
+                  <td v-for="col in curChild.columns" :key="col.fieldname" class="px-3 py-1.5 text-ink-gray-7">
+                    <span v-if="col.fieldtype === 'currency'" class="tabular-nums">{{ money(r[col.fieldname], doc[curCurrency]) }}</span>
                     <span v-else>{{ r[col.fieldname] }}</span>
                   </td>
                 </tr>
@@ -43,12 +45,7 @@
           <div class="flex items-center gap-2 text-sm font-semibold text-ink-gray-8">
             <Printer class="h-4 w-4 text-ink-gray-6" /> Print
           </div>
-          <ComboField
-            label="Print format"
-            :options="printFormats"
-            :modelValue="printFormat"
-            @update:modelValue="(v) => (printFormat = v || 'Standard')"
-          />
+          <ComboField label="Print format" :options="printFormats" :modelValue="printFormat" @update:modelValue="(v) => (printFormat = v || 'Standard')" />
           <div class="flex flex-wrap justify-end gap-2">
             <Button label="Cancel" @click="printOpen = false" />
             <Button label="Download PDF" @click="downloadPdf" />
@@ -61,19 +58,8 @@
           <div class="flex items-center gap-2 text-sm font-semibold text-ink-gray-8">
             <MessageCircle class="h-4 w-4 text-green-600" /> Send via WhatsApp
           </div>
-          <ComboField
-            v-if="senderOptions.length"
-            label="Send from"
-            :options="senderOptions"
-            :modelValue="waSender"
-            @update:modelValue="(v) => (waSender = v || '')"
-          />
-          <ComboField
-            label="Attach print format"
-            :options="printFormats"
-            :modelValue="waFormat"
-            @update:modelValue="(v) => (waFormat = v || 'Standard')"
-          />
+          <ComboField v-if="senderOptions.length" label="Send from" :options="senderOptions" :modelValue="waSender" @update:modelValue="(v) => (waSender = v || '')" />
+          <ComboField label="Attach print format" :options="printFormats" :modelValue="waFormat" @update:modelValue="(v) => (waFormat = v || 'Standard')" />
           <FormControl type="text" label="Phone (optional — auto-detected from party)" placeholder="+2547…" v-model="waPhone" />
           <FormControl type="textarea" label="Message (optional)" v-model="waMessage" />
           <div v-if="waResult" class="text-sm" :class="waOk ? 'text-green-600' : 'text-red-600'">{{ waResult }}</div>
@@ -88,7 +74,12 @@
     </template>
     <template #actions="{ close }">
       <div class="flex w-full flex-wrap items-center justify-between gap-2">
-        <div class="flex gap-2">
+        <div class="flex flex-wrap gap-2">
+          <Dropdown v-if="transitionOptions.length" :options="transitionOptions">
+            <Button variant="solid" label="Create">
+              <template #prefix><Plus class="h-4 w-4" /></template>
+            </Button>
+          </Dropdown>
           <Button label="Open in ERPNext" @click="openDesk">
             <template #prefix><ExternalLink class="h-4 w-4" /></template>
           </Button>
@@ -113,13 +104,15 @@
 
 <script setup>
 import { ref, computed, watch } from 'vue'
-import { Dialog, Button, Badge, ErrorMessage, FormControl, call } from 'frappe-ui'
+import { useRouter } from 'vue-router'
+import { Dialog, Button, Badge, ErrorMessage, FormControl, Dropdown, call } from 'frappe-ui'
 import ExternalLink from '~icons/lucide/external-link'
 import MessageCircle from '~icons/lucide/message-circle'
 import Printer from '~icons/lucide/printer'
 import BookOpen from '~icons/lucide/book-open'
-import { useRouter } from 'vue-router'
+import Plus from '~icons/lucide/plus'
 import ComboField from '@/components/ComboField.vue'
+import { findList } from '@/data/doctypes.js'
 
 const router = useRouter()
 const show = defineModel()
@@ -134,12 +127,24 @@ const emit = defineEmits(['submitted'])
 
 const NON_SUBMITTABLE = ['Item']
 
+// The document currently shown — starts from props, can be re-targeted in place
+// (e.g. after "Create Purchase Receipt" we show the new PR without leaving).
+const curDoctype = ref(props.doctype)
+const curName = ref(props.name)
+const curColumns = ref(props.columns)
+const curChild = ref(props.child)
+const curCurrency = ref(props.currencyField)
+
 const doc = ref(null)
 const loading = ref(false)
 const submitting = ref(false)
 const error = ref('')
 
-// WhatsApp state
+const transitions = ref([])
+const printFormats = ref([{ label: 'Standard', value: 'Standard' }])
+const printFormat = ref('Standard')
+const printOpen = ref(false)
+
 const waOpen = ref(false)
 const waPhone = ref('')
 const waMessage = ref('')
@@ -148,13 +153,10 @@ const waResult = ref('')
 const waOk = ref(false)
 const senderOptions = ref([])
 const waSender = ref('')
-
-// Print state
-const printOpen = ref(false)
-const printFormats = ref([{ label: 'Standard', value: 'Standard' }])
-const printFormat = ref('Standard')
 const waFormat = ref('Standard')
 
+const childRows = computed(() => (doc.value && curChild.value ? doc.value[curChild.value.fieldname] || [] : []))
+const canSubmit = computed(() => doc.value && doc.value.docstatus === 0 && !NON_SUBMITTABLE.includes(curDoctype.value))
 const partyLink = computed(() => {
   const d = doc.value
   if (!d) return null
@@ -163,27 +165,31 @@ const partyLink = computed(() => {
   if (d.party_type && d.party) return { party_type: d.party_type, party: d.party }
   return null
 })
-function openLedger() {
-  if (!partyLink.value) return
-  show.value = false
-  router.push({ path: '/report/general-ledger', query: { ...partyLink.value } })
+const transitionOptions = computed(() =>
+  transitions.value.map((t) => ({ label: `Create ${t.target}`, onClick: () => makeNext(t.target) })),
+)
+
+function resetPanels() {
+  error.value = ''
+  printOpen.value = false
+  waOpen.value = false
+  waResult.value = ''
 }
 
-const childRows = computed(() => (doc.value && props.child ? doc.value[props.child.fieldname] || [] : []))
-const canSubmit = computed(() => doc.value && doc.value.docstatus === 0 && !NON_SUBMITTABLE.includes(props.doctype))
-
 async function load() {
-  if (!props.name) return
+  if (!curName.value) return
   loading.value = true
-  error.value = ''
+  resetPanels()
   doc.value = null
-  waOpen.value = false
-  printOpen.value = false
-  waResult.value = ''
   try {
-    doc.value = await call('frappe.client.get', { doctype: props.doctype, name: props.name })
+    doc.value = await call('frappe.client.get', { doctype: curDoctype.value, name: curName.value })
     try {
-      printFormats.value = (await call('kamil.api.get_print_formats', { doctype: props.doctype })) || [
+      transitions.value = (await call('kamil.api.get_doc_transitions', { doctype: curDoctype.value })) || []
+    } catch (e) {
+      transitions.value = []
+    }
+    try {
+      printFormats.value = (await call('kamil.api.get_print_formats', { doctype: curDoctype.value })) || [
         { label: 'Standard', value: 'Standard' },
       ]
       printFormat.value = printFormats.value[0]?.value || 'Standard'
@@ -205,19 +211,52 @@ async function load() {
 }
 
 watch(show, (v) => {
-  if (v) load()
+  if (v) {
+    // (re)initialise from props each time it's opened from a list
+    curDoctype.value = props.doctype
+    curName.value = props.name
+    curColumns.value = props.columns
+    curChild.value = props.child
+    curCurrency.value = props.currencyField
+    waPhone.value = ''
+    waMessage.value = ''
+    load()
+  }
 })
 
+async function makeNext(target) {
+  error.value = ''
+  try {
+    const out = await call('kamil.api.make_next_document', {
+      doctype: curDoctype.value,
+      name: curName.value,
+      target,
+    })
+    emit('submitted') // let the source list refresh in the background
+    const slug = (out?.doctype || target).toLowerCase().replace(/ /g, '-')
+    const cfg = findList(slug)
+    curDoctype.value = out?.doctype || target
+    curName.value = out?.name
+    curColumns.value = cfg?.columns || []
+    curChild.value = cfg?.create?.child || null
+    curCurrency.value = cfg?.currencyField ?? 'currency'
+    waPhone.value = ''
+    await load() // show the newly created draft in place
+  } catch (e) {
+    error.value = e?.messages?.join(', ') || e?.message || 'Could not create the document.'
+  }
+}
+
 function openDesk() {
-  const slug = props.doctype.toLowerCase().replace(/ /g, '-')
-  window.location.href = `/app/${slug}/${encodeURIComponent(props.name)}`
+  const slug = curDoctype.value.toLowerCase().replace(/ /g, '-')
+  window.location.href = `/app/${slug}/${encodeURIComponent(curName.value)}`
 }
 
 async function submit() {
   submitting.value = true
   error.value = ''
   try {
-    await call('kamil.api.submit_document', { doctype: props.doctype, name: props.name })
+    await call('kamil.api.submit_document', { doctype: curDoctype.value, name: curName.value })
     show.value = false
     emit('submitted')
   } catch (e) {
@@ -227,17 +266,16 @@ async function submit() {
   }
 }
 
+function openLedger() {
+  if (!partyLink.value) return
+  show.value = false
+  router.push({ path: '/report/general-ledger', query: { ...partyLink.value } })
+}
+
 function printUrl(pdf) {
-  const q = new URLSearchParams({
-    doctype: props.doctype,
-    name: props.name,
-    format: printFormat.value || 'Standard',
-    no_letterhead: '0',
-  })
+  const q = new URLSearchParams({ doctype: curDoctype.value, name: curName.value, format: printFormat.value || 'Standard', no_letterhead: '0' })
   if (!pdf) q.set('trigger_print', '1')
-  return pdf
-    ? `/api/method/frappe.utils.print_format.download_pdf?${q.toString()}`
-    : `/printview?${q.toString()}`
+  return pdf ? `/api/method/frappe.utils.print_format.download_pdf?${q.toString()}` : `/printview?${q.toString()}`
 }
 function openPrint() {
   window.open(printUrl(false), '_blank')
@@ -250,10 +288,10 @@ async function toggleWhatsApp() {
   waOpen.value = !waOpen.value
   if (waOpen.value && !waPhone.value) {
     try {
-      const p = await call('kamil.api.resolve_document_phone', { doctype: props.doctype, name: props.name })
+      const p = await call('kamil.api.resolve_document_phone', { doctype: curDoctype.value, name: curName.value })
       if (p) waPhone.value = p
     } catch (e) {
-      /* leave blank; backend still auto-resolves on send */
+      /* leave blank */
     }
   }
 }
@@ -263,8 +301,8 @@ async function sendWhatsApp() {
   waResult.value = ''
   try {
     const out = await call('kamil.api.send_document_whatsapp', {
-      doctype: props.doctype,
-      name: props.name,
+      doctype: curDoctype.value,
+      name: curName.value,
       phone_number: waPhone.value || null,
       message: waMessage.value || null,
       sender: waSender.value || null,
