@@ -15,7 +15,7 @@
         class="rounded-lg border border-outline-gray-1 bg-surface-white px-3 py-2"
       >
         <div class="flex items-center gap-1.5">
-          <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="DOT[k.color] || 'bg-gray-400'" />
+          <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="dotClass(k.color)" />
           <span class="truncate text-xs text-ink-gray-5">{{ k.label }}</span>
         </div>
         <div class="mt-0.5 truncate text-base font-semibold text-ink-gray-9">{{ kpiValue(k) }}</div>
@@ -35,10 +35,11 @@
         v-if="statusOptions.length"
         class="w-full sm:w-56"
         :options="statusOptions"
-        :modelValue="statusValue"
+        :modelValue="comboStatus"
         placeholder="All statuses"
         @update:modelValue="onStatus"
       />
+      <Badge v-if="statusList.length > 1" theme="orange" :label="statusList.join(' or ')" />
       <Button v-if="search || statusValue" label="Clear" @click="clearFilters" />
     </div>
 
@@ -78,6 +79,13 @@
             {{ fmtCurrency(row[amountField], row[currencyField]) }}
           </span>
           <Badge v-if="statusField" :theme="statusTheme(row[statusField])" :label="row[statusField] || 'Draft'" />
+          <!-- Doctypes without a status field still get their draft/submitted state shown -->
+          <Badge
+            v-else-if="row.docstatus !== undefined"
+            :theme="docstatusBadge(row.docstatus).theme"
+            :label="docstatusBadge(row.docstatus).label"
+          />
+          <Badge v-if="kindField && row[kindField]" :theme="kindTheme(row[kindField])" :label="row[kindField]" />
         </div>
       </button>
     </div>
@@ -98,7 +106,13 @@
       }"
     >
       <template #cell="{ item, row, column }">
-        <Badge v-if="column.key === 'status'" :theme="statusTheme(item)" :label="item || 'Draft'" />
+        <Badge v-if="column.type === 'status'" :theme="statusTheme(item)" :label="item || 'Draft'" />
+        <Badge
+          v-else-if="column.type === 'docstatus'"
+          :theme="docstatusBadge(item).theme"
+          :label="docstatusBadge(item).label"
+        />
+        <Badge v-else-if="column.type === 'kind' && item" :theme="kindTheme(item)" :label="item" />
         <span v-else-if="column.type === 'currency'" class="tabular-nums text-ink-gray-7">
           {{ fmtCurrency(item, row[currencyField]) }}
         </span>
@@ -111,6 +125,7 @@
 
     <CreateDialog v-if="createConfig" v-model="showCreate" :config="createConfig" @created="onCreated" />
     <PaymentDialog v-if="special === 'payment'" v-model="showPayment" @created="onCreated" />
+    <PaymentRequestDialog v-if="special === 'payment-request'" v-model="showRequest" @created="onCreated" />
     <DocViewDialog
       v-model="showView"
       :doctype="doctype"
@@ -124,18 +139,21 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { Button, Badge, ListView, Spinner, TextInput, createListResource, call, debounce } from 'frappe-ui'
 import Plus from '~icons/lucide/plus'
 import ArrowDown from '~icons/lucide/arrow-down'
 import CreateDialog from '@/components/dialogs/CreateDialog.vue'
 import PaymentDialog from '@/components/dialogs/PaymentDialog.vue'
+import PaymentRequestDialog from '@/components/dialogs/PaymentRequestDialog.vue'
 import DocViewDialog from '@/components/dialogs/DocViewDialog.vue'
 import { useIsMobile } from '@/composables/useIsMobile'
 import { usePullToRefresh } from '@/composables/usePullToRefresh'
 import Skeleton from '@/components/Skeleton.vue'
 import ComboField from '@/components/ComboField.vue'
 import { haptic } from '@/utils/haptics'
+import { statusTheme, docstatusBadge, kindTheme, dotClass } from '@/utils/status.js'
 
 const props = defineProps({
   title: { type: String, required: true },
@@ -151,17 +169,12 @@ const props = defineProps({
 const rootEl = ref(null)
 const showCreate = ref(false)
 const showPayment = ref(false)
+const showRequest = ref(false)
 const showView = ref(false)
 const viewName = ref('')
 
 const isMobile = useIsMobile()
 
-const DOT = {
-  green: 'bg-green-500',
-  blue: 'bg-blue-500',
-  orange: 'bg-orange-500',
-  amber: 'bg-amber-500',
-}
 const kpis = ref([])
 const kpiCurrency = ref('KES')
 async function loadKpis() {
@@ -178,9 +191,10 @@ function kpiValue(k) {
   return k.money ? fmtCurrency(k.value, kpiCurrency.value) : new Intl.NumberFormat('en-KE').format(k.value || 0)
 }
 
-const canCreate = computed(() => !!props.createConfig || props.special === 'payment')
-const newLabel = computed(() =>
-  props.special === 'payment' ? 'New Payment' : 'New ' + (props.createConfig?.label || 'Record'),
+const SPECIAL_LABELS = { payment: 'New Payment', 'payment-request': 'Request Payment' }
+const canCreate = computed(() => !!props.createConfig || !!SPECIAL_LABELS[props.special])
+const newLabel = computed(
+  () => SPECIAL_LABELS[props.special] || 'New ' + (props.createConfig?.label || 'Record'),
 )
 
 // Field roles derived from the column config (drives the mobile card layout)
@@ -189,6 +203,7 @@ const nameField = pick((c) => c.field === 'name')
 const statusField = pick((c) => c.type === 'status')
 const amountField = pick((c) => c.type === 'currency')
 const dateField = pick((c) => c.type === 'date')
+const kindField = pick((c) => c.type === 'kind')
 const partyField = pick((c) => !c.type && c.field !== 'name')
 
 function subtitle(row) {
@@ -201,6 +216,7 @@ function subtitle(row) {
 function openNew() {
   haptic()
   if (props.special === 'payment') showPayment.value = true
+  else if (props.special === 'payment-request') showRequest.value = true
   else showCreate.value = true
 }
 function onCreated() {
@@ -209,7 +225,8 @@ function onCreated() {
 }
 
 const queryFields = computed(() => {
-  const set = new Set(['name'])
+  // docstatus is always fetched so lists without a status field can still show state.
+  const set = new Set(['name', 'docstatus'])
   let hasCurrency = false
   props.columns.forEach((c) => {
     set.add(c.field)
@@ -245,9 +262,15 @@ const { distance: ptrDistance, refreshing: ptrRefreshing } = usePullToRefresh(ro
   return new Promise((r) => setTimeout(r, 700))
 })
 
+const route = useRoute()
 const search = ref('')
-const statusValue = ref('')
+// May arrive from a notification deep-link as a comma-separated set ("Unpaid,Partly Paid"),
+// in which case we filter on all of them so the list matches the count that was clicked.
+const statusValue = ref(String(route.query.status || ''))
 const statusOptions = ref([])
+const statusList = computed(() => statusValue.value.split(',').map((s) => s.trim()).filter(Boolean))
+// The dropdown can only represent a single selection.
+const comboStatus = computed(() => (statusList.value.length === 1 ? statusList.value[0] : ''))
 
 async function loadStatuses() {
   try {
@@ -256,11 +279,28 @@ async function loadStatuses() {
     statusOptions.value = []
   }
 }
-onMounted(loadStatuses)
+onMounted(() => {
+  loadStatuses()
+  // A deep-linked status has to be pushed into the resource, which was created
+  // before we looked at the query string.
+  if (statusList.value.length) applyFilters()
+})
+
+// Clicking a second notification for the same list only changes the query string.
+watch(
+  () => route.query.status,
+  (v) => {
+    const next = String(v || '')
+    if (next === statusValue.value) return
+    statusValue.value = next
+    applyFilters()
+  },
+)
 
 function applyFilters() {
   const f = { ...props.filters }
-  if (statusValue.value) f.status = statusValue.value
+  if (statusList.value.length === 1) f.status = statusList.value[0]
+  else if (statusList.value.length > 1) f.status = ['in', statusList.value]
   list.filters = f
 
   const q = (search.value || '').trim()
@@ -305,14 +345,5 @@ function fmtCurrency(v, currency) {
 function fmtDate(v) {
   if (!v) return ''
   return new Date(v).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
-}
-function statusTheme(status) {
-  const map = {
-    Paid: 'green', Completed: 'green', Submitted: 'blue', Draft: 'gray',
-    Unpaid: 'orange', Overdue: 'red', Cancelled: 'red', Return: 'gray',
-    'Partly Paid': 'orange', 'To Bill': 'orange', 'To Deliver': 'orange',
-    'To Receive': 'orange', 'On Hold': 'red',
-  }
-  return map[status] || 'gray'
 }
 </script>

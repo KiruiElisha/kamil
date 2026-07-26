@@ -8,6 +8,8 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    AccountDialog: typeof import('./src/components/dialogs/AccountDialog.vue')['default']
+    AccountNode: typeof import('./src/components/AccountNode.vue')['default']
     AppShell: typeof import('./src/components/AppShell.vue')['default']
     BottomNav: typeof import('./src/components/BottomNav.vue')['default']
     ComboField: typeof import('./src/components/ComboField.vue')['default']
@@ -18,11 +20,14 @@ declare module 'vue' {
     ItemsTable: typeof import('./src/components/ItemsTable.vue')['default']
     LinkField: typeof import('./src/components/LinkField.vue')['default']
     ListInsights: typeof import('./src/components/ListInsights.vue')['default']
+    NotificationBell: typeof import('./src/components/NotificationBell.vue')['default']
     PaymentDialog: typeof import('./src/components/dialogs/PaymentDialog.vue')['default']
+    PaymentRequestDialog: typeof import('./src/components/dialogs/PaymentRequestDialog.vue')['default']
     RankList: typeof import('./src/components/RankList.vue')['default']
     RecentList: typeof import('./src/components/RecentList.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     Skeleton: typeof import('./src/components/Skeleton.vue')['default']
+    UserDialog: typeof import('./src/components/dialogs/UserDialog.vue')['default']
   }
 }

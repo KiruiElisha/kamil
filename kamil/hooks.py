@@ -86,7 +86,11 @@ app_license = "mit"
 # ------------
 
 # before_install = "kamil.install.before_install"
-# after_install = "kamil.install.after_install"
+after_install = "kamil.setup.after_install"
+
+# Custom fields + the Customer approval workflow are (re)applied on every migrate.
+# setup.setup_kamil is idempotent, so this is safe to repeat.
+after_migrate = "kamil.setup.after_migrate"
 
 # Uninstallation
 # ------------

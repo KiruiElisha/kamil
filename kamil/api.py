@@ -1048,12 +1048,65 @@ def get_list_kpis(doctype: str, company: str | None = None) -> dict:
 	return {"currency": _currency_for(company), "kpis": candidates[:4]}
 
 
+# Marker that lets us find our cancellation note again among a document's comments.
+# Stored as a Comment so no schema change / migration is needed, and the reason
+# also shows up on the desk timeline.
+_CANCEL_MARKER = "[kamil-cancel-reason]"
+
+
 @frappe.whitelist()
-def cancel_document(doctype: str, name: str) -> dict:
-	"""Cancel a submitted document (reverses its ledger entries)."""
+def cancel_document(doctype: str, name: str, reason: str | None = None) -> dict:
+	"""Cancel a submitted document (reverses its ledger entries), recording why.
+
+	The reason is kept as a Comment tagged with ``_CANCEL_MARKER`` rather than a
+	custom field, so this works on any DocType without a migration.
+	"""
+	reason = (reason or "").strip()
+	if not reason:
+		frappe.throw(_("Please give a reason for cancelling this document."))
+
 	doc = frappe.get_doc(doctype, name)
 	doc.cancel()
-	return {"name": doc.name, "docstatus": doc.docstatus}
+
+	frappe.get_doc(
+		{
+			"doctype": "Comment",
+			"comment_type": "Comment",
+			"reference_doctype": doctype,
+			"reference_name": name,
+			"content": f"{_CANCEL_MARKER} {reason}",
+		}
+	).insert(ignore_permissions=True)
+
+	return {"name": doc.name, "docstatus": doc.docstatus, "reason": reason}
+
+
+@frappe.whitelist()
+def get_cancellation_reason(doctype: str, name: str) -> dict:
+	"""The recorded cancellation reason for a document, if we have one."""
+	if not _can_read(doctype):
+		return {}
+
+	rows = frappe.get_all(
+		"Comment",
+		filters={
+			"reference_doctype": doctype,
+			"reference_name": name,
+			"content": ("like", f"%{_CANCEL_MARKER}%"),
+		},
+		fields=["content", "owner", "creation"],
+		order_by="creation desc",
+		limit=1,
+	)
+	if not rows:
+		return {}
+
+	row = rows[0]
+	return {
+		"reason": (row.content or "").replace(_CANCEL_MARKER, "").strip(),
+		"by": row.owner,
+		"on": row.creation,
+	}
 
 
 @frappe.whitelist()
@@ -1118,11 +1171,32 @@ def get_status_options(doctype: str) -> list:
 
 
 @frappe.whitelist()
-def export_report(report: str, filters: str | dict | None = None, file_format: str = "Excel") -> None:
-	"""Stream a query report as .xlsx (or .csv) download."""
+def export_report(
+	report: str,
+	filters: str | dict | None = None,
+	file_format: str = "Excel",
+	columns: str | list | None = None,
+) -> None:
+	"""Stream a query report as .xlsx (or .csv) download.
+
+	`columns` optionally restricts the export to a subset of fieldnames, so a download
+	matches the columns the user chose to keep on screen.
+	"""
 	data = run_report(report, filters, limit=100000)
-	columns = data.get("columns") or []
+	all_columns = data.get("columns") or []
 	rows = data.get("rows") or []
+
+	wanted = columns
+	if isinstance(wanted, str):
+		try:
+			wanted = frappe.parse_json(wanted)
+		except Exception:
+			wanted = [c.strip() for c in wanted.split(",") if c.strip()]
+	if isinstance(wanted, list) and wanted:
+		keep = set(wanted)
+		columns = [c for c in all_columns if c.get("fieldname") in keep] or all_columns
+	else:
+		columns = all_columns
 
 	matrix = [[c.get("label") or c.get("fieldname") for c in columns]]
 	for row in rows:
@@ -1433,3 +1507,232 @@ def get_app_links() -> dict:
 	"""Optional external app shortcuts shown in the UI (only if installed)."""
 	installed = frappe.get_installed_apps() or []
 	return {"raven": "/raven" if "raven" in installed else None}
+
+
+_REPORT_SAFE_FIELDTYPES = (
+	"Data", "Select", "Link", "Dynamic Link", "Date", "Datetime", "Time",
+	"Currency", "Float", "Int", "Percent", "Check", "Small Text", "Read Only",
+)
+_REPORT_EXTRA_FIELDS = (
+	"status", "posting_date", "transaction_date", "schedule_date", "due_date",
+	"grand_total", "outstanding_amount", "paid_amount", "total_debit", "item_group", "stock_uom",
+)
+
+
+@frappe.whitelist()
+def get_doc_report(doctype: str, filters: str | dict | None = None, limit: int = 200) -> dict:
+	"""Frappe-style report view for a doctype: wider column set + column totals.
+	Rows come from frappe.get_list, so role AND user permissions apply."""
+	empty = {"columns": [], "rows": [], "totals": {}, "currency": None, "truncated": False}
+	if not frappe.db.exists("DocType", doctype) or not _can_read(doctype):
+		return empty
+
+	try:
+		filters = frappe.parse_json(filters) if isinstance(filters, str) else (filters or {})
+	except Exception:
+		filters = {}
+	if not isinstance(filters, dict):
+		filters = {}
+
+	meta = frappe.get_meta(doctype)
+	has_company = meta.has_field("company")
+	company = _resolve_company(filters.get("company")) if has_company else None
+	if has_company and company:
+		filters["company"] = company
+
+	columns = [{"label": "ID", "fieldname": "name", "fieldtype": "Data"}]
+	seen = {"name"}
+
+	def add(df):
+		if not df or df.fieldname in seen:
+			return
+		if df.fieldtype not in _REPORT_SAFE_FIELDTYPES:
+			return
+		seen.add(df.fieldname)
+		columns.append({"label": _(df.label or df.fieldname), "fieldname": df.fieldname, "fieldtype": df.fieldtype})
+
+	for df in meta.fields:
+		if df.in_list_view:
+			add(df)
+	for fieldname in _REPORT_EXTRA_FIELDS:
+		add(meta.get_field(fieldname))
+
+	columns = columns[:12]
+	fieldnames = [c["fieldname"] for c in columns]
+
+	rows = frappe.get_list(
+		doctype,
+		filters=filters,
+		fields=fieldnames,
+		order_by="modified desc",
+		limit_page_length=frappe.utils.cint(limit) + 1,
+	)
+	truncated = len(rows) > frappe.utils.cint(limit)
+	rows = rows[: frappe.utils.cint(limit)]
+
+	totals = {}
+	for c in columns:
+		if c["fieldtype"] in ("Currency", "Float", "Int", "Percent") and c["fieldname"] != "name":
+			totals[c["fieldname"]] = flt(sum(flt(r.get(c["fieldname"])) for r in rows))
+
+	return {
+		"columns": columns,
+		"rows": rows,
+		"totals": totals,
+		"currency": _currency_for(company),
+		"truncated": truncated,
+	}
+
+
+# ---------------------------------------------------------------------------
+# Navigation permissions
+# ---------------------------------------------------------------------------
+
+
+@frappe.whitelist()
+def get_nav_permissions(doctypes: str | list | None = None) -> dict:
+	"""Per-doctype read/create flags, so the sidebar only offers what the user may open.
+
+	Unknown or uninstalled doctypes come back as not-readable rather than raising,
+	which lets the frontend list entries for optional apps unconditionally.
+	"""
+	if isinstance(doctypes, str):
+		try:
+			doctypes = frappe.parse_json(doctypes)
+		except Exception:
+			doctypes = [d.strip() for d in doctypes.split(",") if d.strip()]
+	if not isinstance(doctypes, list):
+		return {}
+
+	out = {}
+	for doctype in doctypes:
+		if not isinstance(doctype, str) or not doctype:
+			continue
+		try:
+			if not frappe.db.exists("DocType", doctype):
+				out[doctype] = {"read": False, "create": False}
+				continue
+			out[doctype] = {
+				"read": bool(frappe.has_permission(doctype, "read")),
+				"create": bool(frappe.has_permission(doctype, "create")),
+			}
+		except Exception:
+			out[doctype] = {"read": False, "create": False}
+	return out
+
+
+@frappe.whitelist()
+def get_permitted_reports(reports: str | list | None = None) -> dict:
+	"""Which of the app's reports the user may run.
+
+	A query report is allowed when the user can read the report's reference
+	DocType and the Report record itself is not restricted away from them.
+	"""
+	if isinstance(reports, str):
+		try:
+			reports = frappe.parse_json(reports)
+		except Exception:
+			reports = [r.strip() for r in reports.split(",") if r.strip()]
+	if not isinstance(reports, list):
+		return {}
+
+	out = {}
+	for report in reports:
+		if not isinstance(report, str) or not report:
+			continue
+		try:
+			if not frappe.db.exists("Report", report):
+				out[report] = False
+				continue
+			ref_doctype = frappe.db.get_value("Report", report, "ref_doctype")
+			out[report] = bool(not ref_doctype or frappe.has_permission(ref_doctype, "read"))
+		except Exception:
+			out[report] = False
+	return out
+
+
+# ---------------------------------------------------------------------------
+# Notifications (pending work shown in the header bell)
+# ---------------------------------------------------------------------------
+
+# Each entry: doctype, label, the statuses it counts, and a colour. The list view is
+# deep-linked with exactly these statuses, so the list always matches the count clicked.
+_NOTIFICATION_SOURCES = (
+	("Sales Invoice", "Overdue invoices", ("Overdue",), "red"),
+	("Sales Invoice", "Unpaid invoices", ("Unpaid", "Partly Paid"), "orange"),
+	("Purchase Invoice", "Overdue bills", ("Overdue",), "red"),
+	("Purchase Invoice", "Unpaid bills", ("Unpaid", "Partly Paid"), "orange"),
+	("Sales Order", "Orders to deliver", ("To Deliver", "To Deliver and Bill"), "amber"),
+	("Purchase Order", "Orders to receive", ("To Receive", "To Receive and Bill"), "amber"),
+	("Material Request", "Requests pending", ("Pending",), "blue"),
+	("Quotation", "Open quotations", ("Open",), "blue"),
+)
+
+
+@frappe.whitelist()
+def get_notifications() -> dict:
+	"""Counts of things needing attention, for the header bell.
+
+	Every count goes through frappe.get_list, so role and user permissions apply
+	and a user only ever sees totals for records they could open themselves.
+	"""
+	items = []
+	for doctype, label, statuses, color in _NOTIFICATION_SOURCES:
+		if not frappe.db.exists("DocType", doctype) or not _can_read(doctype):
+			continue
+		count = _agg_count(doctype, {"docstatus": 1, "status": ("in", list(statuses))})
+		if not count:
+			continue
+		items.append(
+			{
+				"key": f"{frappe.scrub(doctype)}-{frappe.scrub(label)}",
+				"label": _(label),
+				"count": count,
+				"doctype": doctype,
+				"status": ",".join(statuses),
+				"color": color,
+			}
+		)
+
+	return {"total": sum(i["count"] for i in items), "items": items}
+
+
+# ---------------------------------------------------------------------------
+# Report filter helpers
+# ---------------------------------------------------------------------------
+
+
+@frappe.whitelist()
+def get_fiscal_years() -> list:
+	"""Fiscal years for the financial-statement filters, newest first."""
+	if not _can_read("Fiscal Year"):
+		return []
+	rows = frappe.get_all("Fiscal Year", fields=["name"], order_by="year_start_date desc", limit=20)
+	return [{"label": r.name, "value": r.name} for r in rows]
+
+
+@frappe.whitelist()
+def get_current_fiscal_year() -> dict:
+	"""The fiscal year containing today, with its bounds — used as report filter defaults.
+
+	Falls back to the calendar year so report filters still get sensible dates on a
+	site with no Fiscal Year records the user can read.
+	"""
+	try:
+		row = frappe.get_all(
+			"Fiscal Year",
+			filters={"year_start_date": ("<=", nowdate()), "year_end_date": (">=", nowdate())},
+			fields=["name", "year_start_date", "year_end_date"],
+			limit=1,
+		)
+		if row:
+			return {
+				"name": row[0].name,
+				"start_date": str(row[0].year_start_date),
+				"end_date": str(row[0].year_end_date),
+			}
+	except Exception:
+		pass
+
+	year = frappe.utils.getdate(nowdate()).year
+	return {"name": None, "start_date": f"{year}-01-01", "end_date": f"{year}-12-31"}

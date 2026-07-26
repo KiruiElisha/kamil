@@ -11,6 +11,12 @@
             <div class="text-xs text-ink-gray-5">{{ c.label }}</div>
             <div class="mt-0.5 text-sm">
               <Badge v-if="c.type === 'status'" :theme="statusTheme(doc[c.field])" :label="doc[c.field] || 'Draft'" />
+              <Badge
+                v-else-if="c.type === 'docstatus'"
+                :theme="docstatusBadge(doc[c.field]).theme"
+                :label="docstatusBadge(doc[c.field]).label"
+              />
+              <Badge v-else-if="c.type === 'kind' && doc[c.field]" :theme="kindTheme(doc[c.field])" :label="doc[c.field]" />
               <span v-else-if="c.type === 'currency'" class="tabular-nums text-ink-gray-8">{{ money(doc[c.field], doc[curCurrency]) }}</span>
               <span v-else-if="c.type === 'date'" class="text-ink-gray-7">{{ fmtDate(doc[c.field]) }}</span>
               <span v-else class="text-ink-gray-8">{{ doc[c.field] }}</span>
@@ -40,6 +46,18 @@
           </div>
         </div>
 
+        <!-- Why this document was cancelled (shown for anything already cancelled) -->
+        <div v-if="isCancelled" class="space-y-1 rounded-lg border border-red-200 bg-red-50 p-3">
+          <div class="flex items-center gap-2 text-sm font-semibold text-red-700">
+            <Ban class="h-4 w-4" /> Cancelled
+          </div>
+          <p v-if="cancelReason.reason" class="text-sm text-ink-gray-8">{{ cancelReason.reason }}</p>
+          <p v-else class="text-sm italic text-ink-gray-5">No reason was recorded for this cancellation.</p>
+          <p v-if="cancelReason.by" class="text-xs text-ink-gray-5">
+            by {{ cancelReason.by }}<span v-if="cancelReason.on"> · {{ fmtDate(cancelReason.on) }}</span>
+          </p>
+        </div>
+
         <!-- Cancel confirmation -->
         <div v-if="cancelOpen" class="space-y-3 rounded-lg border border-red-200 bg-red-50 p-3">
           <div class="flex items-center gap-2 text-sm font-semibold text-red-700">
@@ -49,9 +67,22 @@
             Cancelling reverses its accounting and stock entries. This cannot be undone —
             you would need to amend the document instead.
           </p>
+          <FormControl
+            type="textarea"
+            label="Reason for cancelling (required)"
+            placeholder="e.g. Duplicate entry — customer was invoiced twice"
+            v-model="cancelReasonInput"
+          />
           <div class="flex justify-end gap-2">
             <Button label="Keep it" @click="cancelOpen = false" />
-            <Button theme="red" variant="solid" label="Yes, cancel it" :loading="cancelling" @click="cancelDoc" />
+            <Button
+              theme="red"
+              variant="solid"
+              label="Yes, cancel it"
+              :loading="cancelling"
+              :disabled="!cancelReasonInput.trim()"
+              @click="cancelDoc"
+            />
           </div>
         </div>
 
@@ -100,6 +131,9 @@
           <Button v-if="canCancel" theme="red" label="Cancel doc" @click="cancelOpen = !cancelOpen">
             <template #prefix><Ban class="h-4 w-4" /></template>
           </Button>
+          <Button v-if="isPaymentRequest" variant="solid" label="Review & approve" @click="openApproval">
+            <template #prefix><CheckCircle class="h-4 w-4" /></template>
+          </Button>
           <Button label="Open in ERPNext" @click="openDesk">
             <template #prefix><ExternalLink class="h-4 w-4" /></template>
           </Button>
@@ -132,8 +166,10 @@ import Printer from '~icons/lucide/printer'
 import BookOpen from '~icons/lucide/book-open'
 import Plus from '~icons/lucide/plus'
 import Ban from '~icons/lucide/ban'
+import CheckCircle from '~icons/lucide/check-circle'
 import ComboField from '@/components/ComboField.vue'
 import { findList } from '@/data/doctypes.js'
+import { statusTheme, kindTheme, docstatusBadge } from '@/utils/status.js'
 
 const router = useRouter()
 const show = defineModel()
@@ -167,6 +203,8 @@ const printFormat = ref('Standard')
 const printOpen = ref(false)
 const cancelOpen = ref(false)
 const cancelling = ref(false)
+const cancelReasonInput = ref('')
+const cancelReason = ref({})
 
 const waOpen = ref(false)
 const waPhone = ref('')
@@ -180,7 +218,9 @@ const waFormat = ref('Standard')
 
 const childRows = computed(() => (doc.value && curChild.value ? doc.value[curChild.value.fieldname] || [] : []))
 const canCancel = computed(() => doc.value && doc.value.docstatus === 1)
+const isCancelled = computed(() => doc.value && doc.value.docstatus === 2)
 const canSubmit = computed(() => doc.value && doc.value.docstatus === 0 && !NON_SUBMITTABLE.includes(curDoctype.value))
+const isPaymentRequest = computed(() => curDoctype.value === 'Payment Request')
 const partyLink = computed(() => {
   const d = doc.value
   if (!d) return null
@@ -198,6 +238,8 @@ function resetPanels() {
   error.value = ''
   printOpen.value = false
   cancelOpen.value = false
+  cancelReasonInput.value = ''
+  cancelReason.value = {}
   waOpen.value = false
   waResult.value = ''
 }
@@ -209,6 +251,17 @@ async function load() {
   doc.value = null
   try {
     doc.value = await call('frappe.client.get', { doctype: curDoctype.value, name: curName.value })
+    if (doc.value?.docstatus === 2) {
+      try {
+        cancelReason.value =
+          (await call('kamil.api.get_cancellation_reason', {
+            doctype: curDoctype.value,
+            name: curName.value,
+          })) || {}
+      } catch (e) {
+        cancelReason.value = {}
+      }
+    }
     try {
       transitions.value = (await call('kamil.api.get_doc_transitions', { doctype: curDoctype.value })) || []
     } catch (e) {
@@ -273,6 +326,11 @@ async function makeNext(target) {
   }
 }
 
+function openApproval() {
+  show.value = false
+  router.push(`/payment-approval/${encodeURIComponent(curName.value)}`)
+}
+
 function openDesk() {
   const slug = curDoctype.value.toLowerCase().replace(/ /g, '-')
   window.location.href = `/app/${slug}/${encodeURIComponent(curName.value)}`
@@ -293,13 +351,19 @@ async function submit() {
 }
 
 async function cancelDoc() {
+  const reason = cancelReasonInput.value.trim()
+  if (!reason) return
   cancelling.value = true
   error.value = ''
   try {
-    await call('kamil.api.cancel_document', { doctype: curDoctype.value, name: curName.value })
+    await call('kamil.api.cancel_document', {
+      doctype: curDoctype.value,
+      name: curName.value,
+      reason,
+    })
     cancelOpen.value = false
     emit('submitted')
-    await load()
+    await load() // reloads with docstatus 2, which pulls the reason back in
   } catch (e) {
     error.value = e?.messages?.join(', ') || e?.message || 'Could not cancel the document.'
   } finally {
@@ -370,9 +434,5 @@ function money(v, c) {
 function fmtDate(v) {
   if (!v) return ''
   return new Date(v).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
-}
-function statusTheme(status) {
-  const map = { Paid: 'green', Completed: 'green', Submitted: 'blue', Draft: 'gray', Unpaid: 'orange', Overdue: 'red', Cancelled: 'red', Return: 'gray', 'Partly Paid': 'orange', 'To Bill': 'orange', 'To Deliver': 'orange', 'To Receive': 'orange', 'On Hold': 'red' }
-  return map[status] || 'gray'
 }
 </script>

@@ -3,13 +3,53 @@
     <div class="flex flex-wrap items-end justify-between gap-2">
       <h2 class="text-lg font-semibold text-ink-gray-8">{{ cfg?.title || 'Report' }}</h2>
       <div class="flex flex-wrap items-end gap-2">
-        <FormControl
-          v-for="f in cfg?.filters || []"
-          :key="f.fieldname"
-          type="date"
-          :label="f.label"
-          v-model="values[f.fieldname]"
-        />
+        <!-- Filters, rendered from each report's own declaration -->
+        <template v-for="f in cfg?.filters || []" :key="f.fieldname">
+          <FormControl
+            v-if="f.fieldtype === 'date'"
+            type="date"
+            :label="f.label"
+            v-model="values[f.fieldname]"
+          />
+          <FormControl
+            v-else-if="f.fieldtype === 'check'"
+            type="checkbox"
+            :label="f.label"
+            :modelValue="!!values[f.fieldname]"
+            @update:modelValue="(v) => (values[f.fieldname] = v ? 1 : 0)"
+          />
+          <ComboField
+            v-else-if="f.fieldtype === 'select'"
+            class="w-40"
+            :label="f.label"
+            :options="f.options"
+            :modelValue="values[f.fieldname]"
+            @update:modelValue="(v) => (values[f.fieldname] = v || '')"
+          />
+          <ComboField
+            v-else-if="f.fieldtype === 'fiscal_year'"
+            class="w-40"
+            :label="f.label"
+            :options="fiscalYears"
+            :modelValue="values[f.fieldname]"
+            @update:modelValue="(v) => (values[f.fieldname] = v || '')"
+          />
+          <LinkField
+            v-else-if="f.fieldtype === 'link'"
+            class="w-48"
+            :label="f.label"
+            :doctype="f.options"
+            :filters="f.filters || {}"
+            :modelValue="values[f.fieldname]"
+            @update:modelValue="(v) => (values[f.fieldname] = v || '')"
+          />
+        </template>
+
+        <Dropdown v-if="columns.length" :options="columnOptions">
+          <Button label="Columns">
+            <template #prefix><Columns class="h-4 w-4" /></template>
+          </Button>
+        </Dropdown>
         <Dropdown :options="downloadOptions">
           <Button label="Download" :disabled="!rows.length">
             <template #prefix><Download class="h-4 w-4" /></template>
@@ -19,9 +59,11 @@
       </div>
     </div>
 
-    <div v-if="partyFilter.party" class="flex flex-wrap items-center gap-2">
-      <Badge theme="blue" :label="`${partyFilter.party_type || 'Party'}: ${partyFilter.party[0]}`" />
-      <Button label="Clear filter" @click="clearParty" />
+    <div v-if="partyFilter.party || hiddenCount" class="flex flex-wrap items-center gap-2">
+      <Badge v-if="partyFilter.party" theme="blue" :label="`${partyFilter.party_type || 'Party'}: ${partyFilter.party[0]}`" />
+      <Button v-if="partyFilter.party" label="Clear filter" @click="clearParty" />
+      <Badge v-if="hiddenCount" theme="gray" :label="`${hiddenCount} column${hiddenCount > 1 ? 's' : ''} hidden`" />
+      <Button v-if="hiddenCount" label="Show all columns" @click="showAllColumns" />
     </div>
 
     <div v-if="loading" class="space-y-2">
@@ -35,7 +77,7 @@
         <thead class="sticky top-0 z-10 bg-surface-gray-2">
           <tr>
             <th
-              v-for="c in columns"
+              v-for="c in visibleColumns"
               :key="c.fieldname"
               class="whitespace-nowrap px-3 py-2 text-xs font-medium text-ink-gray-5"
               :class="isNum(c) ? 'text-right' : 'text-left'"
@@ -47,7 +89,7 @@
         <tbody>
           <tr v-for="(r, i) in rows" :key="i" class="border-t border-outline-gray-1">
             <td
-              v-for="c in columns"
+              v-for="c in visibleColumns"
               :key="c.fieldname"
               class="whitespace-nowrap px-3 py-1.5 text-ink-gray-7"
               :class="isNum(c) ? 'text-right tabular-nums' : ''"
@@ -56,7 +98,7 @@
             </td>
           </tr>
           <tr v-if="!rows.length">
-            <td :colspan="Math.max(columns.length, 1)" class="p-8 text-center text-sm text-ink-gray-5">
+            <td :colspan="Math.max(visibleColumns.length, 1)" class="p-8 text-center text-sm text-ink-gray-5">
               No data for this period.
             </td>
           </tr>
@@ -69,10 +111,13 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch } from 'vue'
+import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { Button, FormControl, Dropdown, Badge, call } from 'frappe-ui'
 import Download from '~icons/lucide/download'
+import Columns from '~icons/lucide/columns'
 import Skeleton from '@/components/Skeleton.vue'
+import ComboField from '@/components/ComboField.vue'
+import LinkField from '@/components/LinkField.vue'
 import { findReport } from '@/data/reports.js'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -102,6 +147,33 @@ const truncated = ref(false)
 const loading = ref(false)
 const error = ref('')
 
+// --- fiscal year, fetched once and shared by every report that needs it -------
+const fiscalYears = ref([])
+const fiscalYear = ref({ name: null, start_date: null, end_date: null })
+
+onMounted(async () => {
+  try {
+    const [years, current] = await Promise.all([
+      call('kamil.api.get_fiscal_years'),
+      call('kamil.api.get_current_fiscal_year'),
+    ])
+    fiscalYears.value = years || []
+    fiscalYear.value = current || fiscalYear.value
+    // Defaults were applied before this resolved, so fill in anything still blank
+    // and re-run if a filter the report needs has only now become available.
+    let filled = false
+    for (const f of cfg.value?.filters || []) {
+      if (!values[f.fieldname]) {
+        values[f.fieldname] = resolveDefault(f.default)
+        if (values[f.fieldname]) filled = true
+      }
+    }
+    if (filled) run()
+  } catch (e) {
+    /* filters keep their calendar-based fallbacks */
+  }
+})
+
 function today() {
   return new Date().toISOString().slice(0, 10)
 }
@@ -109,12 +181,85 @@ function monthStart() {
   const d = new Date()
   return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10)
 }
+function yearStart() {
+  return new Date(new Date().getFullYear(), 0, 1).toISOString().slice(0, 10)
+}
+
+function resolveDefault(token) {
+  switch (token) {
+    case 'month_start':
+      return monthStart()
+    case 'year_start':
+      return yearStart()
+    case 'fiscal_year_start':
+      return fiscalYear.value.start_date || yearStart()
+    case 'fiscal_year':
+      return fiscalYear.value.name || ''
+    case 'today':
+      return today()
+    default:
+      // Anything else is a literal — a select's default value, or 0/1 for a check.
+      return token ?? ''
+  }
+}
 
 function applyDefaults() {
   Object.keys(values).forEach((k) => delete values[k])
   for (const f of cfg.value?.filters || []) {
-    values[f.fieldname] = f.default === 'month_start' ? monthStart() : today()
+    values[f.fieldname] = resolveDefault(f.default)
   }
+}
+
+// --- column visibility, remembered per report --------------------------------
+const hidden = ref(new Set())
+const storageKey = computed(() => `kamil:report-columns:${route.params.key}`)
+
+function loadHidden() {
+  try {
+    const raw = localStorage.getItem(storageKey.value)
+    hidden.value = new Set(raw ? JSON.parse(raw) : [])
+  } catch (e) {
+    hidden.value = new Set()
+  }
+}
+function persistHidden() {
+  try {
+    localStorage.setItem(storageKey.value, JSON.stringify([...hidden.value]))
+  } catch (e) {
+    /* private browsing — visibility just won't persist */
+  }
+}
+function toggleColumn(fieldname) {
+  const next = new Set(hidden.value)
+  if (next.has(fieldname)) next.delete(fieldname)
+  else next.add(fieldname)
+  // Never let the last column be hidden — the table would be unreadable.
+  if (next.size >= columns.value.length) return
+  hidden.value = next
+  persistHidden()
+}
+function showAllColumns() {
+  hidden.value = new Set()
+  persistHidden()
+}
+
+const visibleColumns = computed(() => columns.value.filter((c) => !hidden.value.has(c.fieldname)))
+const hiddenCount = computed(() => columns.value.length - visibleColumns.value.length)
+
+// Checkbox-style menu: a tick against every column that is currently shown.
+const columnOptions = computed(() => [
+  {
+    group: 'Show columns',
+    items: columns.value.map((c) => ({
+      label: `${hidden.value.has(c.fieldname) ? '☐' : '☑'}  ${c.label || c.fieldname}`,
+      onClick: () => toggleColumn(c.fieldname),
+    })),
+  },
+])
+
+// --- running the report -------------------------------------------------------
+function payload() {
+  return JSON.stringify({ ...(cfg.value?.defaults || {}), ...values, ...partyFilter.value })
 }
 
 async function run() {
@@ -124,7 +269,7 @@ async function run() {
   try {
     const res = await call('kamil.api.run_report', {
       report: cfg.value.report,
-      filters: JSON.stringify({ ...values, ...partyFilter.value }),
+      filters: payload(),
       limit: 500,
     })
     columns.value = res?.columns || []
@@ -143,7 +288,10 @@ async function run() {
 watch(
   () => [route.params.key, route.query.party, route.query.party_type],
   ([key], old) => {
-    if (!old || old[0] !== key) applyDefaults()
+    if (!old || old[0] !== key) {
+      applyDefaults()
+      loadHidden()
+    }
     run()
   },
   { immediate: true },
@@ -158,15 +306,15 @@ function fileStamp() {
   return `${(cfg.value?.title || 'report').replace(/\s+/g, '-')}-${today()}`
 }
 
+// Downloads follow what is on screen — hidden columns are left out.
 function downloadCsv() {
   const esc = (v) => {
     const str = v === null || v === undefined ? '' : String(v)
     return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str
   }
-  const head = columns.value.map((c) => esc(c.label)).join(',')
-  const body = rows.value
-    .map((r) => columns.value.map((c) => esc(r[c.fieldname])).join(','))
-    .join('\n')
+  const cols = visibleColumns.value
+  const head = cols.map((c) => esc(c.label)).join(',')
+  const body = rows.value.map((r) => cols.map((c) => esc(r[c.fieldname])).join(',')).join('\n')
   // BOM keeps Excel happy with UTF-8
   const blob = new Blob(['\uFEFF' + head + '\n' + body], { type: 'text/csv;charset=utf-8;' })
   const url = URL.createObjectURL(blob)
@@ -182,9 +330,10 @@ function downloadCsv() {
 function downloadExcel() {
   const q = new URLSearchParams({
     report: cfg.value?.report || '',
-    filters: JSON.stringify({ ...values, ...partyFilter.value }),
+    filters: payload(),
     file_format: 'Excel',
   })
+  if (hiddenCount.value) q.set('columns', JSON.stringify(visibleColumns.value.map((c) => c.fieldname)))
   window.open(`/api/method/kamil.api.export_report?${q.toString()}`, '_blank')
 }
 
