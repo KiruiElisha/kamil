@@ -28,6 +28,31 @@
           <FormControl type="number" label="Amount to request" v-model="form.amount" />
         </div>
 
+        <!-- Between the company's own accounts -->
+        <div v-else-if="tab === 2" class="space-y-3">
+          <p class="rounded-lg bg-surface-gray-1 px-3 py-2 text-xs text-ink-gray-6">
+            Moves money between your own accounts — bank to cash, one bank to another. It is
+            drafted as an Internal Transfer payment entry and nothing moves until it is approved.
+          </p>
+          <LinkField
+            label="From account"
+            doctype="Account"
+            :filters="{ is_group: 0, account_type: ['in', ['Bank', 'Cash']] }"
+            :modelValue="form.paid_from"
+            @update:modelValue="(v) => (form.paid_from = v)"
+          />
+          <LinkField
+            label="To account"
+            doctype="Account"
+            :filters="{ is_group: 0, account_type: ['in', ['Bank', 'Cash']] }"
+            :modelValue="form.paid_to"
+            @update:modelValue="(v) => (form.paid_to = v)"
+          />
+          <FormControl type="number" label="Amount" v-model="form.amount" />
+          <FormControl type="text" label="Reference no. (optional)" placeholder="e.g. cheque or slip number" v-model="form.reference_no" />
+          <FormControl type="text" label="What is this for?" placeholder="e.g. Float for the Nakuru depot" v-model="form.description" />
+        </div>
+
         <!-- A direct expense -->
         <div v-else class="space-y-3">
           <p class="rounded-lg bg-surface-gray-1 px-3 py-2 text-xs text-ink-gray-6">
@@ -57,7 +82,13 @@
             @update:modelValue="(v) => (form.mode_of_payment = v || '')"
             @created="loadModes"
           />
-          <FormControl type="text" label="Approver email" placeholder="approver@company.com" v-model="form.recipient" />
+          <ComboField
+            label="Approver"
+            :options="approverOptions"
+            :modelValue="form.recipient"
+            :placeholder="approverOptions.length ? 'Pick who approves this' : 'No approvers found'"
+            @update:modelValue="(v) => (form.recipient = v || '')"
+          />
           <FormControl type="text" label="Approver WhatsApp (optional)" placeholder="+2547…" v-model="form.phone_number" />
           <div class="flex items-end gap-4">
             <FormControl type="checkbox" label="Send email" v-model="form.via_email" />
@@ -76,7 +107,7 @@
     <template #actions="{ close }">
       <div class="flex w-full justify-end gap-2">
         <Button label="Close" @click="close" />
-        <Button variant="solid" :loading="saving" :label="tab === 0 ? 'Request payment' : 'Book & request'" @click="submit" />
+        <Button variant="solid" :loading="saving" :label="submitLabel" @click="submit" />
       </div>
     </template>
   </Dialog>
@@ -91,7 +122,7 @@ import LinkField from '@/components/LinkField.vue'
 const show = defineModel()
 const emit = defineEmits(['created'])
 
-const tabs = [{ label: 'Against invoice' }, { label: 'Direct expense' }]
+const tabs = [{ label: 'Against invoice' }, { label: 'Direct expense' }, { label: 'Internal transfer' }]
 const tab = ref(0)
 
 const refTypeOptions = [
@@ -105,6 +136,9 @@ const error = ref('')
 const result = ref(null)
 
 const payableOptions = ref([])
+// Only users who hold an approving role — sending it to anyone else just produces a
+// link they cannot act on.
+const approverOptions = ref([])
 const payables = ref([])
 const modeOptions = ref([])
 
@@ -115,6 +149,9 @@ const form = reactive({
   expense_account: '',
   description: '',
   cost_center: '',
+  paid_from: '',
+  paid_to: '',
+  reference_no: '',
   mode_of_payment: '',
   recipient: '',
   phone_number: '',
@@ -132,6 +169,9 @@ function reset() {
     expense_account: '',
     description: '',
     cost_center: '',
+    paid_from: '',
+    paid_to: '',
+    reference_no: '',
     mode_of_payment: '',
     recipient: '',
     phone_number: '',
@@ -154,6 +194,18 @@ async function loadPayables() {
   }
 }
 
+async function loadApprovers() {
+  try {
+    approverOptions.value = (await call('kamil.payment_flow.list_payment_approvers')) || []
+    // One approver is not a choice; pre-select it.
+    if (!form.recipient && approverOptions.value.length === 1) {
+      form.recipient = approverOptions.value[0].value
+    }
+  } catch (e) {
+    approverOptions.value = []
+  }
+}
+
 async function loadModes() {
   try {
     modeOptions.value = (await call('kamil.api.list_modes_of_payment')) || []
@@ -167,6 +219,7 @@ watch(show, (v) => {
   reset()
   loadPayables()
   loadModes()
+  loadApprovers()
 })
 
 function onRefTypeChange(v) {
@@ -200,13 +253,31 @@ function describeSend(out) {
   return lines
 }
 
+const submitLabel = computed(
+  () => ['Request payment', 'Book & request', 'Request transfer'][tab.value] || 'Request payment',
+)
+
 async function submit() {
   error.value = ''
   result.value = null
   saving.value = true
   try {
     let created
-    if (tab.value === 0) {
+    let isTransfer = false
+    if (tab.value === 2) {
+      isTransfer = true
+      if (!form.paid_from) throw new Error('Pick the account the money comes from.')
+      if (!form.paid_to) throw new Error('Pick the account the money goes to.')
+      if (!form.amount) throw new Error('Enter the amount.')
+      created = await call('kamil.payment_flow.create_internal_transfer', {
+        paid_from: form.paid_from,
+        paid_to: form.paid_to,
+        amount: form.amount,
+        mode_of_payment: form.mode_of_payment || null,
+        reference_no: form.reference_no || null,
+        remarks: form.description || null,
+      })
+    } else if (tab.value === 0) {
       if (!form.reference_name) throw new Error('Pick an invoice to request payment against.')
       created = await call('kamil.payment_flow.create_payment_request', {
         reference_doctype: refType.value,
@@ -236,19 +307,28 @@ async function submit() {
     // Sending is a separate step so a mail failure never loses the request itself.
     let sendOut = null
     if (form.via_email || form.via_whatsapp) {
-      sendOut = await call('kamil.payment_flow.send_payment_request', {
-        name: created.name,
-        via_email: form.via_email ? 1 : 0,
-        via_whatsapp: form.via_whatsapp ? 1 : 0,
-        recipient: form.recipient || null,
-        phone_number: form.phone_number || null,
-      })
+      sendOut = await call(
+        isTransfer ? 'kamil.payment_flow.send_internal_transfer' : 'kamil.payment_flow.send_payment_request',
+        {
+          name: created.name,
+          via_email: form.via_email ? 1 : 0,
+          via_whatsapp: form.via_whatsapp ? 1 : 0,
+          recipient: form.recipient || null,
+          phone_number: form.phone_number || null,
+        },
+      )
     }
 
     result.value = {
       ok: true,
       title: `${created.name} raised and awaiting approval.`,
-      lines: sendOut ? describeSend(sendOut) : ['Not sent — share the request manually or send it later.'],
+      lines: sendOut
+        ? describeSend(sendOut)
+        : [
+            created.link
+              ? `Not sent — approval link: ${created.link}`
+              : 'Not sent — share the request manually or send it later.',
+          ],
     }
     emit('created')
   } catch (e) {

@@ -89,6 +89,52 @@ CUSTOM_FIELDS = {
 			"insert_after": "kamil_postal_address",
 		},
 	],
+	# Suppliers need the same paperwork on file as customers do.
+	"Supplier": [
+		{
+			"fieldname": "kamil_compliance_section",
+			"label": "Statutory & Compliance",
+			"fieldtype": "Section Break",
+			"insert_after": "tax_id",
+			"collapsible": 1,
+		},
+		{
+			"fieldname": "kamil_license_number",
+			"label": "License Number",
+			"fieldtype": "Data",
+			"insert_after": "kamil_compliance_section",
+		},
+		{
+			"fieldname": "kamil_license_expiry",
+			"label": "License Expiry",
+			"fieldtype": "Date",
+			"insert_after": "kamil_license_number",
+		},
+		{
+			"fieldname": "kamil_license_file",
+			"label": "Trading / Business License",
+			"fieldtype": "Attach",
+			"insert_after": "kamil_license_expiry",
+		},
+		{
+			"fieldname": "kamil_compliance_col",
+			"fieldtype": "Column Break",
+			"insert_after": "kamil_license_file",
+		},
+		{
+			"fieldname": "kamil_certificate_of_incorporation",
+			"label": "Certificate of Incorporation",
+			"fieldtype": "Attach",
+			"insert_after": "kamil_compliance_col",
+		},
+		{
+			"fieldname": "kamil_cr12",
+			"label": "CR12",
+			"fieldtype": "Attach",
+			"insert_after": "kamil_certificate_of_incorporation",
+			"description": "Company shareholding certificate issued by the registrar.",
+		},
+	],
 	"Payment Request": [
 		{
 			"fieldname": "kamil_expense_section",
@@ -207,11 +253,14 @@ def create_customer_workflow() -> None:
 	if existing:
 		return
 
-	_ensure_workflow_masters()
-
+	# If our workflow is already on the site, leave its is_active flag exactly as the
+	# site set it. Re-enabling it here would undo a deliberate deactivation — and an
+	# active workflow locks Customer editing to the roles named in `allow_edit`, which
+	# is enough to stop an admin without those roles from creating a Customer at all.
 	if frappe.db.exists("Workflow", CUSTOMER_WORKFLOW):
-		frappe.db.set_value("Workflow", CUSTOMER_WORKFLOW, "is_active", 1)
 		return
+
+	_ensure_workflow_masters()
 
 	missing_roles = [
 		role
@@ -255,6 +304,64 @@ def create_customer_workflow() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Desk workspace
+# ---------------------------------------------------------------------------
+
+WORKSPACE = "Kamil"
+WORKSPACE_ICON = "retail"
+WORKSPACE_COLOR = "orange"
+
+
+def create_workspace() -> None:
+	"""A Kamil entry with an icon in the desk sidebar, opening the app at /kamil.
+
+	The app itself is a standalone frontend, so this is a URL workspace rather than a
+	page of cards. An existing workspace is left alone apart from its icon and link —
+	sites reorder and rename these by hand, and clobbering that on every migrate
+	would be hostile.
+	"""
+	if not frappe.db.exists("DocType", "Workspace"):
+		return
+
+	if frappe.db.exists("Workspace", WORKSPACE):
+		doc = frappe.get_doc("Workspace", WORKSPACE)
+		changed = False
+		if not doc.icon:
+			doc.icon = WORKSPACE_ICON
+			changed = True
+		if doc.type == "URL" and not doc.external_link:
+			doc.external_link = "/kamil"
+			changed = True
+		if changed:
+			doc.save(ignore_permissions=True)
+		return
+
+	doc = frappe.get_doc(
+		{
+			"doctype": "Workspace",
+			"label": WORKSPACE,
+			"title": WORKSPACE,
+			"type": "URL",
+			"external_link": "/kamil",
+			"icon": WORKSPACE_ICON,
+			"indicator_color": WORKSPACE_COLOR,
+			"public": 1,
+			"content": "[]",
+			"app": "kamil",
+		}
+	)
+	# `module` is a link, so only set it once Frappe has created the Module Def.
+	if frappe.db.exists("Module Def", WORKSPACE):
+		doc.module = WORKSPACE
+
+	try:
+		doc.insert(ignore_permissions=True)
+	except Exception:
+		# A workspace is a convenience, never a reason for an install to fail.
+		frappe.log_error(frappe.get_traceback(), "Kamil Setup: workspace")
+
+
+# ---------------------------------------------------------------------------
 # Entry points
 # ---------------------------------------------------------------------------
 
@@ -271,4 +378,5 @@ def setup_kamil() -> None:
 	"""Idempotent: safe to run on every migrate."""
 	create_custom_fields()
 	create_customer_workflow()
+	create_workspace()
 	frappe.db.commit()

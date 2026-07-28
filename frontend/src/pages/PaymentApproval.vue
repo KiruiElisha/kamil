@@ -12,7 +12,7 @@
       <div class="flex flex-wrap items-center justify-between gap-2">
         <div class="min-w-0">
           <h2 class="truncate text-lg font-semibold text-ink-gray-8">{{ pr.name }}</h2>
-          <p class="text-sm text-ink-gray-5">Payment approval</p>
+          <p class="text-sm text-ink-gray-5">{{ isTransfer ? 'Internal transfer approval' : 'Payment approval' }}</p>
         </div>
         <Badge :theme="statusTheme(pr.status)" :label="pr.status || 'Draft'" />
       </div>
@@ -21,9 +21,27 @@
       <div class="rounded-xl border border-outline-gray-1 bg-surface-white p-4">
         <div class="text-xs uppercase tracking-wide text-ink-gray-4">Amount requested</div>
         <div class="mt-1 text-2xl font-semibold tabular-nums text-ink-gray-9">
-          {{ money(pr.grand_total, pr.currency) }}
+          {{ money(isTransfer ? pr.paid_amount : pr.grand_total, pr.currency) }}
         </div>
-        <div class="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 border-t border-outline-gray-1 pt-3 text-sm">
+        <div v-if="isTransfer" class="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 border-t border-outline-gray-1 pt-3 text-sm">
+          <div>
+            <div class="text-xs text-ink-gray-5">From account</div>
+            <div class="truncate text-ink-gray-8">{{ pr.paid_from }}</div>
+          </div>
+          <div>
+            <div class="text-xs text-ink-gray-5">To account</div>
+            <div class="truncate text-ink-gray-8">{{ pr.paid_to }}</div>
+          </div>
+          <div v-if="pr.reference_no">
+            <div class="text-xs text-ink-gray-5">Reference no.</div>
+            <div class="truncate text-ink-gray-8">{{ pr.reference_no }}</div>
+          </div>
+          <div v-if="pr.remarks">
+            <div class="text-xs text-ink-gray-5">For</div>
+            <div class="truncate text-ink-gray-8">{{ pr.remarks }}</div>
+          </div>
+        </div>
+        <div v-else class="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 border-t border-outline-gray-1 pt-3 text-sm">
           <div>
             <div class="text-xs text-ink-gray-5">{{ pr.party_type || 'Party' }}</div>
             <div class="text-ink-gray-8">{{ pr.party_name || pr.party || '—' }}</div>
@@ -48,6 +66,10 @@
       </div>
 
       <!-- Already decided -->
+      <div v-if="isTransfer && pr.docstatus === 1" class="rounded-lg border border-green-200 bg-green-50 p-3 text-sm">
+        <div class="font-medium text-green-700">Already paid</div>
+        <div class="text-ink-gray-7">The transfer has been released — payment entry {{ pr.name }}.</div>
+      </div>
       <div v-if="pr.approved_by" class="rounded-lg border border-green-200 bg-green-50 p-3 text-sm">
         <div class="font-medium text-green-700">Already approved</div>
         <div class="text-ink-gray-7">by {{ pr.approved_by }}<span v-if="pr.approved_on"> · {{ pr.approved_on }}</span></div>
@@ -81,19 +103,27 @@
             @created="loadModes"
           />
           <p class="text-xs text-ink-gray-5">
-            Approving creates the payment entry and allocates it against
-            {{ pr.reference_name || 'the invoice' }} in one step.
+            {{
+              isTransfer
+                ? 'Approving releases the drafted transfer — this is the point at which the money moves.'
+                : `Approving creates the payment entry and allocates it against ${pr.reference_name || 'the invoice'} in one step.`
+            }}
           </p>
           <div class="flex flex-wrap justify-end gap-2">
             <Button label="Reject" theme="red" @click="rejectOpen = !rejectOpen" />
-            <Button variant="solid" label="Approve & pay" :loading="approving" @click="approve" />
+            <Button
+              variant="solid"
+              :label="isTransfer ? 'Approve & transfer' : 'Approve & pay'"
+              :loading="approving"
+              @click="approve"
+            />
           </div>
         </div>
 
         <div v-if="rejectOpen" class="space-y-3 rounded-xl border border-red-200 bg-red-50 p-4">
           <FormControl
             type="textarea"
-            label="Why are you rejecting this payment?"
+            :label="isTransfer ? 'Why are you rejecting this transfer?' : 'Why are you rejecting this payment?'"
             placeholder="e.g. Amount does not match the delivery note"
             v-model="rejectReason"
           />
@@ -112,7 +142,10 @@
       </template>
 
       <div class="flex flex-wrap gap-2">
-        <Button label="All payment requests" @click="router.push('/list/payment-request')" />
+        <Button
+          :label="isTransfer ? 'All payment entries' : 'All payment requests'"
+          @click="router.push(isTransfer ? '/list/payment-entry' : '/list/payment-request')"
+        />
         <Button label="Open in ERPNext" @click="openDesk" />
       </div>
     </div>
@@ -141,14 +174,20 @@ const outcome = ref(null)
 const mode = ref('')
 const modeOptions = ref([])
 
-// Only a submitted, undecided request can still be acted on.
-const actionable = computed(
-  () =>
-    pr.value &&
+// An internal transfer arrives as ?type=transfer — it is a drafted Payment Entry
+// rather than a Payment Request, so it loads and releases through its own endpoints.
+const isTransfer = computed(() => route.query.type === 'transfer')
+
+// Only a submitted, undecided request — or a still-drafted transfer — can be acted on.
+const actionable = computed(() => {
+  if (!pr.value) return false
+  if (isTransfer.value) return pr.value.docstatus === 0
+  return (
     pr.value.docstatus === 1 &&
     !pr.value.approved_by &&
-    !['Paid', 'Payment Ordered', 'Cancelled'].includes(pr.value.status),
-)
+    !['Paid', 'Payment Ordered', 'Cancelled'].includes(pr.value.status)
+  )
+})
 
 async function loadModes() {
   try {
@@ -163,23 +202,44 @@ async function load() {
   error.value = ''
   outcome.value = null
   try {
-    pr.value = await call('kamil.payment_flow.get_payment_request', { name: route.params.name })
+    pr.value = await call(
+      isTransfer.value ? 'kamil.payment_flow.get_internal_transfer' : 'kamil.payment_flow.get_payment_request',
+      { name: route.params.name },
+    )
     mode.value = pr.value?.mode_of_payment || ''
     await loadModes()
   } catch (e) {
-    error.value = e?.messages?.join(', ') || e?.message || 'Could not load this payment request.'
+    error.value =
+      e?.messages?.join(', ') ||
+      e?.message ||
+      (isTransfer.value ? 'Could not load this transfer.' : 'Could not load this payment request.')
     pr.value = null
   } finally {
     loading.value = false
   }
 }
 
-watch(() => route.params.name, load, { immediate: true })
+watch(() => [route.params.name, route.query.type], load, { immediate: true })
 
 async function approve() {
   approving.value = true
   outcome.value = null
   try {
+    if (isTransfer.value) {
+      const out = await call('kamil.payment_flow.approve_internal_transfer', {
+        name: pr.value.name,
+        mode_of_payment: mode.value || null,
+      })
+      outcome.value = {
+        ok: true,
+        title: 'Transfer released.',
+        lines: [
+          `${money(out.paid_amount, pr.value.currency)} moved from ${pr.value.paid_from} to ${pr.value.paid_to}.`,
+        ],
+      }
+      await load()
+      return
+    }
     const out = await call('kamil.payment_flow.approve_payment_request', {
       name: pr.value.name,
       mode_of_payment: mode.value || null,
@@ -206,13 +266,24 @@ async function approve() {
 async function reject() {
   rejecting.value = true
   try {
-    await call('kamil.payment_flow.reject_payment_request', {
-      name: pr.value.name,
-      reason: rejectReason.value.trim(),
-    })
+    await call(
+      isTransfer.value
+        ? 'kamil.payment_flow.reject_internal_transfer'
+        : 'kamil.payment_flow.reject_payment_request',
+      { name: pr.value.name, reason: rejectReason.value.trim() },
+    )
     rejectOpen.value = false
-    outcome.value = { ok: true, title: 'Rejected.', lines: ['The request was cancelled and cannot be paid.'] }
-    await load()
+    outcome.value = {
+      ok: true,
+      title: 'Rejected.',
+      lines: [
+        isTransfer.value
+          ? 'The drafted transfer was discarded — nothing moved.'
+          : 'The request was cancelled and cannot be paid.',
+      ],
+    }
+    if (isTransfer.value) pr.value = null
+    else await load()
   } catch (e) {
     outcome.value = {
       ok: false,
@@ -225,7 +296,8 @@ async function reject() {
 }
 
 function openDesk() {
-  window.location.href = `/app/payment-request/${encodeURIComponent(pr.value.name)}`
+  const slug = isTransfer.value ? 'payment-entry' : 'payment-request'
+  window.location.href = `/app/${slug}/${encodeURIComponent(pr.value.name)}`
 }
 
 function money(v, currency) {

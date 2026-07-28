@@ -48,9 +48,9 @@ const link = (fieldname, label, doctype, extra = {}) => ({
   ...extra,
 })
 const check = (fieldname, label, def = 0) => ({ fieldname, label, fieldtype: 'check', default: def })
-const fiscalYear = () => ({
-  fieldname: 'fiscal_year',
-  label: 'Fiscal Year',
+const fiscalYear = (fieldname = 'fiscal_year', label = 'Fiscal Year') => ({
+  fieldname,
+  label,
   fieldtype: 'fiscal_year',
   default: 'fiscal_year',
 })
@@ -67,18 +67,40 @@ const PERIODICITY = select(
 )
 
 // Financial statements can be driven either by fiscal year or by an explicit date
-// range. We always pick the date range so the app never has to resolve fiscal years.
+// range, exactly as on the desk. Fiscal Year is the default because ERPNext resolves
+// every period back to a fiscal year anyway — a free date range that strays outside
+// one fails with "Date … is not in any active Fiscal Year".
+const byFiscalYear = (v) => (v.filter_based_on || 'Fiscal Year') === 'Fiscal Year'
+const byDateRange = (v) => !byFiscalYear(v)
+
 const statementFilters = [
-  date('period_start_date', 'From', 'fiscal_year_start'),
-  date('period_end_date', 'To', 'today'),
+  select('filter_based_on', 'Based on', ['Fiscal Year', 'Date Range'], 'Fiscal Year'),
+  { ...fiscalYear('from_fiscal_year', 'Start Year'), dependsOn: byFiscalYear },
+  { ...fiscalYear('to_fiscal_year', 'End Year'), dependsOn: byFiscalYear },
+  { ...date('period_start_date', 'From', 'fiscal_year_start'), dependsOn: byDateRange },
+  { ...date('period_end_date', 'To', 'fiscal_year_end'), dependsOn: byDateRange },
   PERIODICITY,
+  link('finance_book', 'Finance Book', 'Finance Book'),
+  link('cost_center', 'Cost Center', 'Cost Center', { filters: { is_group: 0 } }),
+  link('project', 'Project', 'Project'),
+  link('presentation_currency', 'Currency', 'Currency'),
+  check('accumulated_values', 'Accumulated', 1),
+  check('include_default_book_entries', 'Include default book entries', 1),
 ]
-const statementDefaults = { filter_based_on: 'Date Range' }
+
+// Profit and Loss adds the view switch and the zero-row toggle the desk report has.
+const plFilters = [
+  ...statementFilters,
+  select('selected_view', 'View', ['Report', 'Growth', 'Margin'], 'Report'),
+  check('show_zero_values', 'Show zero values', 0),
+]
+
+const statementDefaults = {}
 
 export const REPORTS = [
   // --- Financial Statements ------------------------------------------------
   { key: 'profit-and-loss', title: 'Profit and Loss', report: 'Profit and Loss Statement',
-    section: 'Financial Statements', icon: TrendingUp, filters: statementFilters, defaults: statementDefaults },
+    section: 'Financial Statements', icon: TrendingUp, filters: plFilters, defaults: statementDefaults },
   { key: 'balance-sheet', title: 'Balance Sheet', report: 'Balance Sheet',
     section: 'Financial Statements', icon: Scale, filters: statementFilters, defaults: statementDefaults },
   { key: 'cash-flow', title: 'Cash Flow', report: 'Cash Flow',

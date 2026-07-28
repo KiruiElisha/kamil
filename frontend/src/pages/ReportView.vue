@@ -1,10 +1,26 @@
 <template>
   <div class="mx-auto flex w-full min-h-0 max-w-6xl flex-1 flex-col gap-3 p-3 md:p-5">
-    <div class="flex flex-wrap items-end justify-between gap-2">
+    <div class="flex flex-wrap items-center justify-between gap-2">
       <h2 class="text-lg font-semibold text-ink-gray-8">{{ cfg?.title || 'Report' }}</h2>
-      <div class="flex flex-wrap items-end gap-2">
-        <!-- Filters, rendered from each report's own declaration -->
-        <template v-for="f in cfg?.filters || []" :key="f.fieldname">
+      <div class="flex flex-wrap items-center gap-2">
+        <Dropdown v-if="columns.length" :options="columnOptions">
+          <Button label="Columns">
+            <template #prefix><Columns class="h-4 w-4" /></template>
+          </Button>
+        </Dropdown>
+        <Dropdown :options="downloadOptions">
+          <Button label="Download" :disabled="!rows.length">
+            <template #prefix><Download class="h-4 w-4" /></template>
+          </Button>
+        </Dropdown>
+        <Button variant="solid" label="Run" :loading="loading" @click="run" />
+      </div>
+    </div>
+
+    <!-- Filters, rendered from each report's own declaration. Ones that only apply
+         in another mode (fiscal year vs date range) drop out entirely. -->
+    <div v-if="activeFilters.length" class="flex flex-wrap items-end gap-2">
+        <template v-for="f in activeFilters" :key="f.fieldname">
           <FormControl
             v-if="f.fieldtype === 'date'"
             type="date"
@@ -44,19 +60,6 @@
             @update:modelValue="(v) => (values[f.fieldname] = v || '')"
           />
         </template>
-
-        <Dropdown v-if="columns.length" :options="columnOptions">
-          <Button label="Columns">
-            <template #prefix><Columns class="h-4 w-4" /></template>
-          </Button>
-        </Dropdown>
-        <Dropdown :options="downloadOptions">
-          <Button label="Download" :disabled="!rows.length">
-            <template #prefix><Download class="h-4 w-4" /></template>
-          </Button>
-        </Dropdown>
-        <Button variant="solid" label="Run" :loading="loading" @click="run" />
-      </div>
     </div>
 
     <div v-if="drillFilter.party || drillFilter.account || hiddenCount" class="flex flex-wrap items-center gap-2">
@@ -85,7 +88,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch, onMounted } from 'vue'
+import { ref, reactive, computed, watch } from 'vue'
 import { Button, FormControl, Dropdown, Badge, call } from 'frappe-ui'
 import Download from '~icons/lucide/download'
 import Columns from '~icons/lucide/columns'
@@ -130,28 +133,34 @@ const error = ref('')
 const fiscalYears = ref([])
 const fiscalYear = ref({ name: null, start_date: null, end_date: null })
 
-onMounted(async () => {
-  try {
-    const [years, current] = await Promise.all([
+// Fetched once for the whole session. run() awaits this before building a payload:
+// the fiscal-year filters default to values that only exist once this resolves, and
+// firing the report first sends empty Start/End Year, which ERPNext rejects outright
+// with "Start Year and End Year are mandatory".
+let fiscalLoad = null
+function loadFiscalYear() {
+  if (!fiscalLoad) {
+    fiscalLoad = Promise.all([
       call('kamil.api.get_fiscal_years'),
       call('kamil.api.get_current_fiscal_year'),
     ])
-    fiscalYears.value = years || []
-    fiscalYear.value = current || fiscalYear.value
-    // Defaults were applied before this resolved, so fill in anything still blank
-    // and re-run if a filter the report needs has only now become available.
-    let filled = false
-    for (const f of cfg.value?.filters || []) {
-      if (!values[f.fieldname]) {
-        values[f.fieldname] = resolveDefault(f.default)
-        if (values[f.fieldname]) filled = true
-      }
-    }
-    if (filled) run()
-  } catch (e) {
-    /* filters keep their calendar-based fallbacks */
+      .then(([years, current]) => {
+        fiscalYears.value = years || []
+        if (current) fiscalYear.value = current
+      })
+      .catch(() => {
+        /* filters fall back to calendar dates */
+      })
   }
-})
+  return fiscalLoad
+}
+
+// Fill anything still blank once the async defaults are available.
+function fillBlankDefaults() {
+  for (const f of cfg.value?.filters || []) {
+    if (!values[f.fieldname]) values[f.fieldname] = resolveDefault(f.default)
+  }
+}
 
 function today() {
   return new Date().toISOString().slice(0, 10)
@@ -172,6 +181,10 @@ function resolveDefault(token) {
       return yearStart()
     case 'fiscal_year_start':
       return fiscalYear.value.start_date || yearStart()
+    // Deliberately the fiscal year's end rather than today: a statement whose range
+    // runs past the last fiscal year cannot be built at all.
+    case 'fiscal_year_end':
+      return fiscalYear.value.end_date || today()
     case 'fiscal_year':
       return fiscalYear.value.name || ''
     case 'today':
@@ -189,13 +202,25 @@ function applyDefaults() {
   }
 }
 
+// Filters can declare `dependsOn(values)` — e.g. the fiscal-year pickers only apply
+// when the statement is driven by fiscal year, the dates only when it is not.
+const activeFilters = computed(() =>
+  (cfg.value?.filters || []).filter((f) => (typeof f.dependsOn === 'function' ? f.dependsOn(values) : true)),
+)
+
 // --- column visibility, remembered per report --------------------------------
 const storageKey = computed(() => `kamil:report-columns:${route.params.key}`)
 const { visibleColumns, hiddenCount, columnOptions, showAllColumns } = useReportColumns(columns, storageKey)
 
 // --- running the report -------------------------------------------------------
 function payload() {
-  return JSON.stringify({ ...(cfg.value?.defaults || {}), ...values, ...drillFilter.value })
+  // Only send what is actually on screen, so a hidden date range cannot fight with
+  // the fiscal year the report was told to use.
+  const active = {}
+  for (const f of activeFilters.value) {
+    if (values[f.fieldname] !== undefined) active[f.fieldname] = values[f.fieldname]
+  }
+  return JSON.stringify({ ...(cfg.value?.defaults || {}), ...active, ...drillFilter.value })
 }
 
 async function run() {
@@ -203,6 +228,26 @@ async function run() {
   loading.value = true
   error.value = ''
   try {
+    // Wait for the fiscal-year lookup before sending anything, so the first run of a
+    // financial statement already carries Start/End Year rather than firing blank,
+    // failing, and only succeeding on a second pass.
+    await loadFiscalYear()
+    fillBlankDefaults()
+
+    // A fiscal-year filter that is still blank means the site has no Fiscal Year the
+    // user can read. Say so, rather than letting ERPNext raise a bare validation error.
+    const missingYear = (activeFilters.value || []).find(
+      (f) => f.fieldtype === 'fiscal_year' && !values[f.fieldname],
+    )
+    if (missingYear) {
+      error.value =
+        `${missingYear.label} is required and no Fiscal Year is available on this site. ` +
+        'Create one in ERPNext, or set “Based on” to Date Range.'
+      columns.value = []
+      rows.value = []
+      return
+    }
+
     const res = await call('kamil.api.run_report', {
       report: cfg.value.report,
       filters: payload(),
@@ -213,7 +258,16 @@ async function run() {
     currency.value = res?.currency || 'KES'
     truncated.value = !!res?.truncated
   } catch (e) {
-    error.value = e?.messages?.join(', ') || e?.message || 'Could not run this report.'
+    // Frappe's messages carry markup ("… for <strong>Acme</strong>"), which would
+    // otherwise be shown as literal tags.
+    const message = (e?.messages?.join(', ') || e?.message || 'Could not run this report.')
+      .replace(/<[^>]*>/g, '')
+      .trim()
+    // ERPNext resolves every period back to a fiscal year, so a range that strays
+    // outside one fails with a message that does not say what to do about it.
+    error.value = /fiscal year/i.test(message)
+      ? `${message}\n\nPick dates inside an existing fiscal year, or set “Based on” to Fiscal Year and choose the years directly.`
+      : message
     columns.value = []
     rows.value = []
   } finally {

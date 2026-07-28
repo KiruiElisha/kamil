@@ -13,8 +13,59 @@
           />
         </div>
 
+        <!-- Edit form: the same field list the create dialog uses, pre-filled. -->
+        <div v-if="editing" class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <template v-for="f in editFields" :key="f.fieldname">
+            <LinkField
+              v-if="f.fieldtype === 'link'"
+              :doctype="f.options"
+              :label="f.label"
+              :filters="f.filters || {}"
+              :modelValue="editValues[f.fieldname] || ''"
+              @update:modelValue="(v) => (editValues[f.fieldname] = v)"
+            />
+            <ComboField
+              v-else-if="f.fieldtype === 'select'"
+              :label="f.label"
+              :options="f.selectOptions"
+              :modelValue="editValues[f.fieldname]"
+              @update:modelValue="(v) => (editValues[f.fieldname] = v)"
+            />
+            <div v-else-if="f.fieldtype === 'attach'">
+              <label class="mb-1 block text-xs text-ink-gray-5">{{ f.label }}</label>
+              <div class="flex items-center gap-2">
+                <FileUploader @success="(file) => (editValues[f.fieldname] = file.file_url)">
+                  <template #default="{ openFileSelector, uploading }">
+                    <Button
+                      :loading="uploading"
+                      :label="editValues[f.fieldname] ? 'Replace' : 'Upload'"
+                      @click="openFileSelector()"
+                    />
+                  </template>
+                </FileUploader>
+                <a
+                  v-if="editValues[f.fieldname]"
+                  :href="editValues[f.fieldname]"
+                  target="_blank"
+                  rel="noopener"
+                  class="truncate text-xs text-ink-blue-3 hover:underline"
+                >
+                  View file
+                </a>
+                <span v-else class="text-xs text-ink-gray-5">Not uploaded</span>
+              </div>
+            </div>
+            <FormControl
+              v-else
+              :type="editType(f.fieldtype)"
+              :label="f.label"
+              v-model="editValues[f.fieldname]"
+            />
+          </template>
+        </div>
+
         <!-- Summary -->
-        <div class="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
+        <div v-else class="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
           <div v-for="c in curColumns" :key="c.field">
             <div class="text-xs text-ink-gray-5">{{ c.label }}</div>
             <div class="mt-0.5 text-sm">
@@ -176,6 +227,15 @@
         </div>
         <div class="flex flex-wrap gap-2">
           <Button label="Close" @click="close" />
+          <!-- Editing is offered only while a document is still a draft; once it is
+               submitted its ledger entries exist and it must be amended instead. -->
+          <Button v-if="canEdit && !editing" label="Edit" @click="startEdit">
+            <template #prefix><Pencil class="h-4 w-4" /></template>
+          </Button>
+          <template v-if="editing">
+            <Button label="Discard" @click="editing = false" />
+            <Button variant="solid" label="Save" :loading="saving" @click="saveEdit" />
+          </template>
           <!-- A workflow owns the document's progression: its actions replace Submit -->
           <Button
             v-for="t in workflowActions"
@@ -196,15 +256,17 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { Dialog, Button, Badge, ErrorMessage, FormControl, Dropdown, Spinner, call } from 'frappe-ui'
+import { Dialog, Button, Badge, ErrorMessage, FormControl, Dropdown, Spinner, FileUploader, call } from 'frappe-ui'
 import ExternalLink from '~icons/lucide/external-link'
 import MessageCircle from '~icons/lucide/message-circle'
 import Printer from '~icons/lucide/printer'
 import BookOpen from '~icons/lucide/book-open'
 import Plus from '~icons/lucide/plus'
 import Ban from '~icons/lucide/ban'
+import Pencil from '~icons/lucide/pencil'
 import CheckCircle from '~icons/lucide/check-circle'
 import ComboField from '@/components/ComboField.vue'
+import LinkField from '@/components/LinkField.vue'
 import { findList } from '@/data/doctypes.js'
 import { statusTheme, kindTheme, docstatusBadge } from '@/utils/status.js'
 
@@ -276,6 +338,56 @@ const isCancelled = computed(() => doc.value && doc.value.docstatus === 2)
 const canSubmit = computed(() => !!doc.value && !actions.value.workflow && actions.value.can_submit)
 const workflowActions = computed(() => (actions.value.workflow ? actions.value.transitions || [] : []))
 const isPaymentRequest = computed(() => curDoctype.value === 'Payment Request')
+
+const slugFor = (doctype) => (doctype || '').toLowerCase().replace(/ /g, '-')
+
+// --- editing -----------------------------------------------------------------
+const editing = ref(false)
+const saving = ref(false)
+const editValues = ref({})
+
+// The list config already describes this doctype's fields for the create dialog;
+// reuse that rather than maintaining a second field list per doctype.
+const editFields = computed(() => findList(slugFor(curDoctype.value))?.create?.fields || [])
+
+// Draft only. A submitted document owns ledger entries and must be amended.
+const canEdit = computed(
+  () => !!doc.value && doc.value.docstatus === 0 && editFields.value.length > 0,
+)
+
+function startEdit() {
+  const next = {}
+  for (const f of editFields.value) next[f.fieldname] = doc.value?.[f.fieldname] ?? ''
+  editValues.value = next
+  error.value = ''
+  editing.value = true
+}
+
+function editType(ft) {
+  if (ft === 'float' || ft === 'currency') return 'number'
+  if (ft === 'date') return 'date'
+  if (ft === 'textarea') return 'textarea'
+  return 'text'
+}
+
+async function saveEdit() {
+  saving.value = true
+  error.value = ''
+  try {
+    await call('kamil.api.update_document', {
+      doctype: curDoctype.value,
+      name: curName.value,
+      values: JSON.stringify(editValues.value),
+    })
+    editing.value = false
+    emit('submitted') // refresh the list behind the dialog
+    await load()
+  } catch (e) {
+    error.value = e?.messages?.join(', ') || e?.message || 'Could not save the changes.'
+  } finally {
+    saving.value = false
+  }
+}
 const partyLink = computed(() => {
   const d = doc.value
   if (!d) return null
@@ -290,6 +402,7 @@ const transitionOptions = computed(() =>
 )
 
 function resetPanels() {
+  editing.value = false
   error.value = ''
   actions.value = { ...EMPTY_ACTIONS }
   printOpen.value = false

@@ -39,6 +39,66 @@ def _load(value):
 	return value or {}
 
 
+# What a Vehicle contributes to a transport document, as target_field: vehicle_field.
+# Mirrors the desk Client Script on Sales Invoice -- that script only runs in the
+# desk form, so anything created through the app has to fill these itself.
+_VEHICLE_MAP = {
+	"custom_license_plate": "license_plate",
+	"custom_trailer_plate": "custom_trailer_plate",
+	"custom_driver": "custom_driver",
+	"custom_driver_name": "full_name",
+	"custom_driver_id": "custom_driver_id",
+	"custom_driver_contact": "custom_driver_contact",
+	"custom_transporter": "custom_transporter",
+}
+
+
+def _fill_from_vehicle(doc):
+	"""Populate plate/driver/transporter (and compartments) from `custom_vehicle`.
+
+	Every write is guarded on the field existing on both sides, so this is a no-op on
+	a site that has not got the transport customisation installed.
+	"""
+	vehicle_name = doc.get("custom_vehicle")
+	if not vehicle_name or not frappe.db.exists("Vehicle", vehicle_name):
+		return
+
+	meta = frappe.get_meta(doc.doctype)
+	vehicle = frappe.get_doc("Vehicle", vehicle_name)
+
+	for target, source in _VEHICLE_MAP.items():
+		if meta.has_field(target) and not doc.get(target):
+			value = vehicle.get(source)
+			if value:
+				doc.set(target, value)
+
+	# The vehicle's own warehouse is where its stock sits.
+	if meta.has_field("set_warehouse") and not doc.get("set_warehouse"):
+		warehouse = vehicle.get("custom_default_warehouse")
+		if warehouse:
+			doc.set("set_warehouse", warehouse)
+
+	# Compartments come across as rows, matching what the desk script builds.
+	if meta.has_field("custom_vehicle_compartments") and not doc.get("custom_vehicle_compartments"):
+		for row in vehicle.get("custom_vehicle_compartments") or []:
+			doc.append("custom_vehicle_compartments", {"name1": row.get("name1"), "qty": row.get("qty")})
+
+
+@frappe.whitelist()
+def get_vehicle_details(vehicle: str) -> dict:
+	"""Everything a transport document takes from a Vehicle, for the create form."""
+	if not vehicle or not frappe.db.exists("Vehicle", vehicle) or not _can_read("Vehicle"):
+		return {}
+
+	doc = frappe.get_doc("Vehicle", vehicle)
+	out = {target: doc.get(source) for target, source in _VEHICLE_MAP.items()}
+	out["set_warehouse"] = doc.get("custom_default_warehouse")
+	out["compartments"] = [
+		{"name1": r.get("name1"), "qty": r.get("qty")} for r in (doc.get("custom_vehicle_compartments") or [])
+	]
+	return out
+
+
 def _apply_transport(doc, transport):
 	transport = _load(transport)
 	if not transport:
@@ -603,7 +663,42 @@ def create_document(doctype: str, values: str | dict | None = None):
 			"Global Defaults", "default_company"
 		)
 	doc = frappe.get_doc(values)
+	_fill_from_vehicle(doc)
 	doc.insert()
+	return {"name": doc.name, "doctype": doc.doctype}
+
+
+@frappe.whitelist()
+def update_document(doctype: str, name: str, values: str | dict | None = None) -> dict:
+	"""Save edits to an existing document from the in-app editor.
+
+	Only draft documents are editable here. A submitted document has ledger entries
+	behind it, so it must be amended or cancelled rather than quietly rewritten — and
+	`doc.save()` would refuse most of those changes anyway.
+	"""
+	values = frappe.parse_json(values) if isinstance(values, str) else (values or {})
+	if not isinstance(values, dict):
+		frappe.throw(_("Invalid values."))
+
+	doc = frappe.get_doc(doctype, name)
+	doc.check_permission("write")
+
+	if doc.docstatus == 1:
+		frappe.throw(_("{0} is submitted. Amend it instead of editing.").format(name))
+	if doc.docstatus == 2:
+		frappe.throw(_("{0} is cancelled and can no longer be edited.").format(name))
+
+	meta = frappe.get_meta(doctype)
+	for field, value in values.items():
+		# Never let the payload rewrite identity or workflow state.
+		if field in ("name", "doctype", "docstatus", "owner", "creation", "workflow_state"):
+			continue
+		if meta.has_field(field):
+			doc.set(field, value)
+
+	_fill_from_vehicle(doc)
+	doc.save()
+
 	return {"name": doc.name, "doctype": doc.doctype}
 
 
@@ -1708,6 +1803,16 @@ def get_list_analytics(doctype: str, company: str | None = None) -> dict:
 	}
 
 
+def has_app_permission() -> bool:
+	"""Whether to show the Kamil tile on the desk's apps screen.
+
+	Called by Frappe's apps screen (see `add_to_apps_screen` in hooks.py). Anyone
+	signed in may open the app — every screen inside it re-checks permissions and
+	shows only what the user can actually read.
+	"""
+	return bool(frappe.session.user and frappe.session.user != "Guest")
+
+
 @frappe.whitelist()
 def get_app_links() -> dict:
 	"""Optional external app shortcuts shown in the UI (only if installed)."""
@@ -2027,33 +2132,74 @@ def mark_all_notifications_read() -> dict:
 
 
 @frappe.whitelist()
-def get_fiscal_years() -> list:
-	"""Fiscal years for the financial-statement filters, newest first."""
+def get_fiscal_years(company: str | None = None) -> list:
+	"""Fiscal years the report filters may offer, newest first.
+
+	Scoped to the company, because a Fiscal Year can be restricted to specific
+	companies — offering one that does not apply is how a report ends up reporting
+	that a date "is not in any active Fiscal Year".
+	"""
 	if not _can_read("Fiscal Year"):
 		return []
-	rows = frappe.get_all("Fiscal Year", fields=["name"], order_by="year_start_date desc", limit=20)
-	return [{"label": r.name, "value": r.name} for r in rows]
+
+	company = _resolve_company(company)
+	rows = []
+	try:
+		from erpnext.accounts.utils import get_fiscal_years as _erpnext_fiscal_years
+
+		rows = _erpnext_fiscal_years(company=company, as_dict=True, raise_on_missing=False) or []
+	except Exception:
+		rows = frappe.get_all(
+			"Fiscal Year",
+			filters={"disabled": 0},
+			fields=["name", "year_start_date", "year_end_date"],
+			order_by="year_start_date desc",
+			limit=20,
+		)
+
+	return [
+		{
+			"label": r.get("name"),
+			"value": r.get("name"),
+			"start_date": str(r.get("year_start_date") or ""),
+			"end_date": str(r.get("year_end_date") or ""),
+		}
+		for r in rows
+	][:20]
 
 
 @frappe.whitelist()
-def get_current_fiscal_year() -> dict:
-	"""The fiscal year containing today, with its bounds — used as report filter defaults.
+def get_current_fiscal_year(company: str | None = None) -> dict:
+	"""The fiscal year containing today, with its bounds — the report filter defaults.
 
-	Falls back to the calendar year so report filters still get sensible dates on a
-	site with no Fiscal Year records the user can read.
+	Asks ERPNext first so company-restricted fiscal years are honoured. Falls back to
+	the newest fiscal year on file, then to the calendar year, so filters still get
+	sensible dates on a site whose fiscal years do not cover today.
 	"""
+	company = _resolve_company(company)
+
 	try:
-		row = frappe.get_all(
-			"Fiscal Year",
-			filters={"year_start_date": ("<=", nowdate()), "year_end_date": (">=", nowdate())},
-			fields=["name", "year_start_date", "year_end_date"],
-			limit=1,
-		)
-		if row:
+		from erpnext.accounts.utils import get_fiscal_year as _erpnext_fiscal_year
+
+		row = _erpnext_fiscal_year(nowdate(), company=company, as_dict=True, raise_on_missing=False)
+		if row and row.get("name"):
 			return {
-				"name": row[0].name,
-				"start_date": str(row[0].year_start_date),
-				"end_date": str(row[0].year_end_date),
+				"name": row.get("name"),
+				"start_date": str(row.get("year_start_date")),
+				"end_date": str(row.get("year_end_date")),
+			}
+	except Exception:
+		pass
+
+	# Today sits outside every fiscal year (common on demo data) — fall back to the
+	# most recent one rather than to dates no report can work with.
+	try:
+		rows = get_fiscal_years(company)
+		if rows and rows[0].get("start_date"):
+			return {
+				"name": rows[0]["value"],
+				"start_date": rows[0]["start_date"],
+				"end_date": rows[0]["end_date"],
 			}
 	except Exception:
 		pass

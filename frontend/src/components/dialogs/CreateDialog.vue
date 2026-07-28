@@ -19,6 +19,32 @@
               :modelValue="values[f.fieldname]"
               @update:modelValue="(v) => (values[f.fieldname] = v)"
             />
+            <!-- Attach: a real upload. Rendering these as text boxes would only let
+                 someone paste a URL, which is not what a CR12 or a licence needs. -->
+            <div v-else-if="f.fieldtype === 'attach'">
+              <label class="mb-1 block text-xs text-ink-gray-5">{{ f.label }}</label>
+              <div class="flex items-center gap-2">
+                <FileUploader @success="(file) => (values[f.fieldname] = file.file_url)">
+                  <template #default="{ openFileSelector, uploading }">
+                    <Button
+                      :loading="uploading"
+                      :label="values[f.fieldname] ? 'Replace' : 'Upload'"
+                      @click="openFileSelector()"
+                    />
+                  </template>
+                </FileUploader>
+                <a
+                  v-if="values[f.fieldname]"
+                  :href="values[f.fieldname]"
+                  target="_blank"
+                  rel="noopener"
+                  class="truncate text-xs text-ink-blue-3 hover:underline"
+                >
+                  View file
+                </a>
+                <span v-else class="text-xs text-ink-gray-5">Not uploaded</span>
+              </div>
+            </div>
             <FormControl
               v-else
               :type="fcType(f.fieldtype)"
@@ -53,7 +79,7 @@
 
 <script setup>
 import { ref, reactive, watch, computed } from 'vue'
-import { Dialog, Button, FormControl, ErrorMessage, call } from 'frappe-ui'
+import { Dialog, Button, FormControl, ErrorMessage, FileUploader, call } from 'frappe-ui'
 import LinkField from '@/components/LinkField.vue'
 import ComboField from '@/components/ComboField.vue'
 import ItemsTable from '@/components/ItemsTable.vue'

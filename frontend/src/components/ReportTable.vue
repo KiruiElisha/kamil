@@ -4,7 +4,7 @@
   </div>
   <div
     v-else-if="error"
-    class="rounded-lg border border-red-200 bg-red-50 p-6 text-center text-sm text-red-700"
+    class="whitespace-pre-line rounded-lg border border-red-200 bg-red-50 p-6 text-center text-sm text-red-700"
   >
     {{ error }}
   </div>

@@ -234,6 +234,193 @@ def create_expense_payment_request(
 
 
 # ---------------------------------------------------------------------------
+# Internal transfers
+# ---------------------------------------------------------------------------
+#
+# Moving money between the company's own accounts has no party and no invoice, so it
+# cannot be a Payment Request — ERPNext requires a reference document. It is instead
+# raised as a *draft* Payment Entry of type "Internal Transfer", which the same
+# approvers release. Nothing hits the ledger until it is submitted, so the draft plays
+# exactly the role the payment request plays for the other flows.
+
+
+def transfer_approval_url(name: str) -> str:
+	"""Deep link into the approval screen for a drafted internal transfer."""
+	return get_url(f"/kamil/payment-approval/{name}?type=transfer")
+
+
+def _account_currency(account: str) -> str | None:
+	return frappe.db.get_value("Account", account, "account_currency")
+
+
+@frappe.whitelist()
+def create_internal_transfer(
+	paid_from: str,
+	paid_to: str,
+	amount: float | str,
+	company: str | None = None,
+	mode_of_payment: str | None = None,
+	reference_no: str | None = None,
+	remarks: str | None = None,
+	posting_date: str | None = None,
+) -> dict:
+	"""Draft an Internal Transfer payment entry for approval.
+
+	Both accounts must belong to the same company and must not be group accounts —
+	otherwise the entry could not be submitted once approved, and the request would
+	sit in the approver's queue only to fail on release.
+	"""
+	if not frappe.has_permission("Payment Entry", "create"):
+		frappe.throw(_("You are not allowed to raise payments."), frappe.PermissionError)
+
+	amount = flt(amount)
+	if amount <= 0:
+		frappe.throw(_("Transfer amount must be greater than zero."))
+	if not paid_from or not paid_to:
+		frappe.throw(_("Pick the account to move money from and the account to move it to."))
+	if paid_from == paid_to:
+		frappe.throw(_("The two accounts must be different."))
+
+	from kamil.api import _resolve_company
+
+	company = _resolve_company(company)
+	if not company:
+		frappe.throw(_("No company to raise this transfer for."))
+
+	for account in (paid_from, paid_to):
+		row = frappe.db.get_value("Account", account, ["company", "is_group"], as_dict=True)
+		if not row:
+			frappe.throw(_("Account {0} does not exist.").format(account))
+		if row.company != company:
+			frappe.throw(_("Account {0} does not belong to {1}.").format(account, company))
+		if row.is_group:
+			frappe.throw(_("Account {0} is a group and cannot hold a payment.").format(account))
+
+	entry = frappe.get_doc(
+		{
+			"doctype": "Payment Entry",
+			"payment_type": "Internal Transfer",
+			"company": company,
+			"posting_date": posting_date or nowdate(),
+			"paid_from": paid_from,
+			"paid_to": paid_to,
+			"paid_amount": amount,
+			"received_amount": amount,
+			"mode_of_payment": mode_of_payment or None,
+			"reference_no": reference_no or None,
+			"reference_date": posting_date or nowdate() if reference_no else None,
+			"remarks": remarks or None,
+		}
+	)
+	# Currency conversion between two different account currencies needs rates the app
+	# does not ask for; keep the app to same-currency transfers and say so plainly.
+	if _account_currency(paid_from) != _account_currency(paid_to):
+		frappe.throw(_("Transfers between accounts in different currencies must be done on the desk."))
+
+	entry.flags.ignore_permissions = True
+	entry.insert()  # left as a draft — approval submits it
+
+	return {
+		"name": entry.name,
+		"doctype": "Payment Entry",
+		"paid_amount": flt(entry.paid_amount),
+		"status": "Draft",
+		"link": transfer_approval_url(entry.name),
+	}
+
+
+@frappe.whitelist()
+def get_internal_transfer(name: str) -> dict:
+	"""A drafted internal transfer, for the approval screen."""
+	entry = frappe.get_doc("Payment Entry", name)
+	entry.check_permission("read")
+
+	if entry.payment_type != "Internal Transfer":
+		frappe.throw(_("{0} is not an internal transfer.").format(name))
+
+	return {
+		"name": entry.name,
+		"doctype": "Payment Entry",
+		"is_transfer": True,
+		"company": entry.company,
+		"posting_date": str(entry.posting_date),
+		"paid_from": entry.paid_from,
+		"paid_to": entry.paid_to,
+		"paid_amount": flt(entry.paid_amount),
+		"currency": entry.paid_from_account_currency,
+		"mode_of_payment": entry.mode_of_payment,
+		"reference_no": entry.reference_no,
+		"remarks": entry.remarks,
+		"docstatus": entry.docstatus,
+		"status": {0: "Draft", 1: "Paid", 2: "Cancelled"}.get(entry.docstatus, "Draft"),
+		"can_approve": _can_approve(),
+	}
+
+
+@frappe.whitelist()
+def approve_internal_transfer(name: str, mode_of_payment: str | None = None) -> dict:
+	"""Release a drafted internal transfer — this is what moves the money."""
+	_require_approver()
+
+	entry = frappe.get_doc("Payment Entry", name)
+	if entry.payment_type != "Internal Transfer":
+		frappe.throw(_("{0} is not an internal transfer.").format(name))
+	if entry.docstatus == 1:
+		frappe.throw(_("{0} has already been paid.").format(name))
+	if entry.docstatus == 2:
+		frappe.throw(_("{0} was cancelled.").format(name))
+
+	if mode_of_payment and mode_of_payment != entry.mode_of_payment:
+		entry.mode_of_payment = mode_of_payment
+
+	entry.flags.ignore_permissions = True
+	entry.submit()
+	entry.add_comment("Comment", _("Internal transfer approved in the Kamil app by {0}.").format(frappe.session.user))
+
+	return {
+		"name": entry.name,
+		"payment_entry": entry.name,
+		"paid_amount": flt(entry.paid_amount),
+		"status": "Paid",
+	}
+
+
+@frappe.whitelist()
+def reject_internal_transfer(name: str, reason: str) -> dict:
+	"""Reject a drafted transfer, recording why.
+
+	A draft has posted nothing, so there is no entry to reverse: the rejection is
+	written onto the draft, which is then cancelled by submitting nothing — Frappe
+	cannot cancel a draft, so the request is deleted instead and the reason returned
+	to the caller (and to whoever raised it, via the approval screen).
+	"""
+	_require_approver()
+
+	reason = (reason or "").strip()
+	if not reason:
+		frappe.throw(_("Please give a reason for rejecting this transfer."))
+
+	entry = frappe.get_doc("Payment Entry", name)
+	if entry.payment_type != "Internal Transfer":
+		frappe.throw(_("{0} is not an internal transfer.").format(name))
+	if entry.docstatus == 1:
+		frappe.throw(_("{0} has already been paid and cannot be rejected.").format(name))
+	if entry.docstatus == 2:
+		return {"name": name, "status": "Cancelled", "reason": reason}
+
+	summary = {
+		"name": entry.name,
+		"status": "Rejected",
+		"reason": reason,
+		"paid_from": entry.paid_from,
+		"paid_to": entry.paid_to,
+		"paid_amount": flt(entry.paid_amount),
+	}
+	frappe.delete_doc("Payment Entry", name, ignore_permissions=True, delete_permanently=False)
+	return summary
+
+
+# ---------------------------------------------------------------------------
 # Sending
 # ---------------------------------------------------------------------------
 
@@ -320,30 +507,86 @@ def _send_whatsapp(pr, phone_number: str | None, sender: str | None, link: str) 
 		pr.name, pr.party_name or pr.party or "", amount, link
 	)
 
+	return _whatsapp_text(phone_number, text, sender, "Kamil Payment Request WhatsApp failed")
+
+
+def _whatsapp_text(phone_number: str, text: str, sender: str | None, log_title: str) -> dict:
+	"""Send an approval message through the app's own WhatsApp transport, which wakes
+	the sleeping gateway first and retries on timeouts (see kamil/whatsapp.py)."""
 	try:
-		from whatsapp_integration.service.rest import send_whatsapp_message
+		from kamil.whatsapp import send_text
 
-		response = send_whatsapp_message(
-			to_number=phone_number,
-			message=text,
-			sender=sender or None,
-			reference_doctype="Payment Request",
-			reference_name=pr.name,
-		)
-		# The integration signals failure either with an "error" key or success=False.
-		error = None
-		if not response:
-			error = _("WhatsApp send failed.")
-		elif isinstance(response, dict):
-			if response.get("error"):
-				error = str(response["error"])
-			elif response.get("success") is False:
-				error = str(response.get("message") or _("WhatsApp send failed."))
-
-		return {"sent": not error, "to": phone_number, "error": error}
+		result = send_text(phone_number, text, sender=sender or None)
+		return {
+			"sent": bool(result.get("success")),
+			"to": result.get("phone_number") or phone_number,
+			"error": result.get("error"),
+		}
 	except Exception as e:
-		frappe.log_error(frappe.get_traceback(), "Kamil Payment Request WhatsApp failed")
+		frappe.log_error(frappe.get_traceback(), log_title)
 		return {"sent": False, "error": str(e)}
+
+
+@frappe.whitelist()
+def send_internal_transfer(
+	name: str,
+	via_email: int | str = 1,
+	via_whatsapp: int | str = 0,
+	recipient: str | None = None,
+	phone_number: str | None = None,
+	sender: str | None = None,
+) -> dict:
+	"""Send a drafted internal transfer for approval, like send_payment_request does."""
+	entry = frappe.get_doc("Payment Entry", name)
+	entry.check_permission("read")
+	if entry.payment_type != "Internal Transfer":
+		frappe.throw(_("{0} is not an internal transfer.").format(name))
+
+	link = transfer_approval_url(name)
+	results = {"name": name, "link": link, "email": None, "whatsapp": None}
+	amount = frappe.utils.fmt_money(entry.paid_amount, currency=entry.paid_from_account_currency or "")
+
+	if frappe.utils.cint(via_email):
+		recipient = (recipient or "").strip()
+		if not recipient:
+			results["email"] = {"sent": False, "error": _("No recipient email address.")}
+		else:
+			body = f"""<p>An internal transfer needs your approval.</p>
+<table cellpadding="6">
+  <tr><td><b>Reference</b></td><td>{frappe.utils.escape_html(entry.name)}</td></tr>
+  <tr><td><b>From</b></td><td>{frappe.utils.escape_html(entry.paid_from)}</td></tr>
+  <tr><td><b>To</b></td><td>{frappe.utils.escape_html(entry.paid_to)}</td></tr>
+  <tr><td><b>Amount</b></td><td>{amount}</td></tr>
+</table>
+<p><a href="{link}">Review and approve this transfer</a></p>
+<p style="color:#888;font-size:12px">Nothing has moved yet — the transfer is a draft until you approve it.</p>"""
+			try:
+				frappe.sendmail(
+					recipients=[recipient],
+					subject=_("Internal transfer approval needed: {0}").format(entry.name),
+					message=body,
+					reference_doctype="Payment Entry",
+					reference_name=entry.name,
+					now=True,
+				)
+				results["email"] = {"sent": True, "to": recipient}
+			except Exception as e:
+				frappe.log_error(frappe.get_traceback(), "Kamil Internal Transfer email failed")
+				results["email"] = {"sent": False, "error": str(e)}
+
+	if frappe.utils.cint(via_whatsapp):
+		phone_number = (phone_number or "").strip()
+		if not phone_number:
+			results["whatsapp"] = {"sent": False, "error": _("No phone number to send to.")}
+		else:
+			text = _("Internal transfer approval needed: {0} — {1} from {2} to {3}. Approve here: {4}").format(
+				entry.name, amount, entry.paid_from, entry.paid_to, link
+			)
+			results["whatsapp"] = _whatsapp_text(
+				phone_number, text, sender, "Kamil Internal Transfer WhatsApp failed"
+			)
+
+	return results
 
 
 # ---------------------------------------------------------------------------
@@ -480,6 +723,49 @@ def reject_payment_request(name: str, reason: str) -> dict:
 	pr.add_comment("Comment", _("Rejected in the Kamil app by {0}: {1}").format(frappe.session.user, reason))
 
 	return {"name": pr.name, "status": frappe.db.get_value("Payment Request", pr.name, "status"), "reason": reason}
+
+
+@frappe.whitelist()
+def list_payment_approvers() -> list:
+	"""Users who could actually approve a payment, for the approver picker.
+
+	Sending the request to somebody without an approving role wastes everyone's time —
+	they would open the link only to be told they are not allowed. So the list is the
+	holders of APPROVE_ROLES, not every user on the site.
+	"""
+	if not frappe.has_permission("User", "read"):
+		return []
+
+	names = frappe.get_all(
+		"Has Role",
+		filters={"role": ("in", list(APPROVE_ROLES)), "parenttype": "User"},
+		pluck="parent",
+		distinct=True,
+	)
+	if not names:
+		return []
+
+	# A list of conditions, not a dict: `name` is constrained twice, and a dict would
+	# silently keep only the last of the two.
+	rows = frappe.get_all(
+		"User",
+		filters=[
+			["name", "in", names],
+			["name", "not in", ["Administrator", "Guest"]],
+			["enabled", "=", 1],
+			["user_type", "=", "System User"],
+		],
+		fields=["name", "full_name", "email"],
+		order_by="full_name asc",
+	)
+
+	return [
+		{
+			"label": f"{r.full_name} ({r.email or r.name})" if r.full_name else (r.email or r.name),
+			"value": r.email or r.name,
+		}
+		for r in rows
+	]
 
 
 @frappe.whitelist()

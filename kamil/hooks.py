@@ -10,16 +10,17 @@ app_license = "mit"
 
 # required_apps = []
 
-# Each item in the list will be shown as an app in the apps page
-# add_to_apps_screen = [
-# 	{
-# 		"name": "kamil",
-# 		"logo": "/assets/kamil/logo.png",
-# 		"title": "Kamil",
-# 		"route": "/kamil",
-# 		"has_permission": "kamil.api.permission.has_app_permission"
-# 	}
-# ]
+# Shown as a tile on the desk's apps screen (/apps), so the app is launchable from
+# ERPNext itself. The logo is the same icon the PWA installs with.
+add_to_apps_screen = [
+	{
+		"name": "kamil",
+		"logo": "/assets/kamil/frontend/icon-192.png",
+		"title": "Kamil",
+		"route": "/kamil",
+		"has_permission": "kamil.api.has_app_permission",
+	}
+]
 
 # Includes in <head>
 # ------------------

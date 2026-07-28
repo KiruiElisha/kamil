@@ -25,13 +25,17 @@ const COMPANY = { fieldname: 'company', label: 'Company', fieldtype: 'link', opt
 const CUSTOMER = { fieldname: 'customer', label: 'Customer', fieldtype: 'link', options: 'Customer', filters: { disabled: 0 } }
 const SUPPLIER = { fieldname: 'supplier', label: 'Supplier', fieldtype: 'link', options: 'Supplier', filters: { disabled: 0 } }
 const WAREHOUSE = { fieldname: 'set_warehouse', label: 'Warehouse', fieldtype: 'link', options: 'Warehouse', default: 'warehouse', filters: { is_group: 0 } }
+// Picking a vehicle fills plate, trailer, driver, transporter, warehouse and the
+// compartment rows server-side (kamil.api._fill_from_vehicle).
+const VEHICLE = { fieldname: 'custom_vehicle', label: 'Vehicle', fieldtype: 'link', options: 'Vehicle' }
 
 // Reusable child columns
 const ITEM_COL = { fieldname: 'item_code', label: 'Item', fieldtype: 'link', options: 'Item', filters: { disabled: 0 }, flex: 2 }
 const QTY_COL = { fieldname: 'qty', label: 'Qty', fieldtype: 'float', flex: 1 }
 const RATE_COL = { fieldname: 'rate', label: 'Rate', fieldtype: 'currency', flex: 1 }
 const wh = (fn, label) => ({ fieldname: fn, label, fieldtype: 'link', options: 'Warehouse', filters: { is_group: 0 }, flex: 1 })
-const SALES_ITEMS = { fieldname: 'items', title: 'Items', columns: [ITEM_COL, QTY_COL, RATE_COL] }
+const AMOUNT_COL = { fieldname: 'amount', label: 'Amount', fieldtype: 'amount', flex: 1 }
+const SALES_ITEMS = { fieldname: 'items', title: 'Items', columns: [ITEM_COL, QTY_COL, RATE_COL, AMOUNT_COL] }
 const BUY_ITEMS = SALES_ITEMS
 
 export const LISTS = [
@@ -43,15 +47,15 @@ export const LISTS = [
   { key: 'sales-order', section: 'Selling', title: 'Sales Orders', doctype: 'Sales Order', icon: ShoppingCart, orderBy: 'transaction_date desc',
     columns: [ { label: 'Order', field: 'name' }, { label: 'Customer', field: 'customer_name' }, { label: 'Date', field: 'transaction_date', type: 'date' }, { label: 'Status', field: 'status', type: 'status' }, { label: 'Total', field: 'grand_total', type: 'currency' } ],
     create: { doctype: 'Sales Order', title: 'New Sales Order', label: 'Order', child: SALES_ITEMS,
-      fields: [ COMPANY, CUSTOMER, { fieldname: 'delivery_date', label: 'Delivery Date', fieldtype: 'date', default: 'today' }, WAREHOUSE ] } },
+      fields: [ COMPANY, CUSTOMER, { fieldname: 'delivery_date', label: 'Delivery Date', fieldtype: 'date', default: 'today' }, VEHICLE, WAREHOUSE ] } },
   { key: 'delivery-note', section: 'Selling', title: 'Delivery Notes', doctype: 'Delivery Note', icon: Truck, orderBy: 'posting_date desc',
     columns: [ { label: 'Delivery Note', field: 'name' }, { label: 'Customer', field: 'customer_name' }, { label: 'Date', field: 'posting_date', type: 'date' }, { label: 'Status', field: 'status', type: 'status' }, { label: 'Total', field: 'grand_total', type: 'currency' } ],
     create: { doctype: 'Delivery Note', title: 'New Delivery Note', label: 'Delivery Note', child: SALES_ITEMS,
-      fields: [ COMPANY, CUSTOMER, WAREHOUSE ] } },
+      fields: [ COMPANY, CUSTOMER, VEHICLE, WAREHOUSE ] } },
   { key: 'sales-invoice', section: 'Selling', title: 'Sales Invoices', doctype: 'Sales Invoice', icon: Receipt, orderBy: 'posting_date desc',
     columns: [ { label: 'Invoice', field: 'name' }, { label: 'Customer', field: 'customer_name' }, { label: 'Date', field: 'posting_date', type: 'date' }, { label: 'Status', field: 'status', type: 'status' }, { label: 'Total', field: 'grand_total', type: 'currency' } ],
     create: { doctype: 'Sales Invoice', title: 'New Sales Invoice', label: 'Invoice', child: SALES_ITEMS,
-      fields: [ COMPANY, CUSTOMER, { fieldname: 'due_date', label: 'Due Date', fieldtype: 'date' }, WAREHOUSE ] } },
+      fields: [ COMPANY, CUSTOMER, { fieldname: 'due_date', label: 'Due Date', fieldtype: 'date' }, VEHICLE, WAREHOUSE ] } },
   // Buying
   { key: 'material-request', section: 'Buying', title: 'Material Requests', doctype: 'Material Request', icon: ClipboardList, orderBy: 'transaction_date desc',
     columns: [ { label: 'Request', field: 'name' }, { label: 'Type', field: 'material_request_type', type: 'kind' }, { label: 'Date', field: 'transaction_date', type: 'date' }, { label: 'Status', field: 'status', type: 'status' } ],
@@ -108,22 +112,38 @@ LISTS.push(
       { label: 'Amount', field: 'grand_total', type: 'currency' },
     ] },
   // Masters — the compliance fields live on Customer as custom fields (see kamil/setup.py).
+  // Fields mirror the live Customer doctype: customer_type, the name parts, contact
+  // details and `custom_verfication_status` (spelling is theirs) all already exist
+  // there. The kamil_* compliance fields are the only ones this app adds.
   { key: 'customer', section: 'Masters', title: 'Customers', doctype: 'Customer', icon: Users, orderBy: 'modified desc', currencyField: 'default_currency',
     columns: [
       { label: 'Customer', field: 'name' },
+      { label: 'Type', field: 'customer_type', type: 'kind' },
       { label: 'Group', field: 'customer_group' },
       { label: 'Tax ID', field: 'tax_id' },
+      { label: 'Verification', field: 'custom_verfication_status', type: 'status' },
       { label: 'Approval', field: 'workflow_state', type: 'status' },
     ],
     create: { doctype: 'Customer', title: 'New Customer', label: 'Customer',
       fields: [
         { fieldname: 'customer_name', label: 'Customer Name', fieldtype: 'data' },
+        { fieldname: 'customer_type', label: 'Type', fieldtype: 'select', selectOptions: sel(['Company', 'Individual', 'Partnership']), default: 'Company' },
         { fieldname: 'customer_group', label: 'Customer Group', fieldtype: 'link', options: 'Customer Group' },
         { fieldname: 'territory', label: 'Territory', fieldtype: 'link', options: 'Territory' },
+        { fieldname: 'default_currency', label: 'Currency', fieldtype: 'link', options: 'Currency' },
         { fieldname: 'tax_id', label: 'Tax ID / PIN', fieldtype: 'data' },
+        // Contact
+        { fieldname: 'first_name', label: 'Contact First Name', fieldtype: 'data' },
+        { fieldname: 'last_name', label: 'Contact Last Name', fieldtype: 'data' },
+        { fieldname: 'mobile_no', label: 'Mobile', fieldtype: 'data' },
+        { fieldname: 'email_id', label: 'Email', fieldtype: 'data' },
+        // Compliance / KYC
         { fieldname: 'kamil_license_number', label: 'License Number', fieldtype: 'data' },
         { fieldname: 'kamil_license_expiry', label: 'License Expiry', fieldtype: 'date' },
         { fieldname: 'kamil_postal_address', label: 'Postal Address', fieldtype: 'data' },
+        { fieldname: 'kamil_license_file', label: 'Trading / Business License', fieldtype: 'attach' },
+        { fieldname: 'kamil_certificate_of_incorporation', label: 'Certificate of Incorporation', fieldtype: 'attach' },
+        { fieldname: 'kamil_cr12', label: 'CR12', fieldtype: 'attach' },
       ] } },
   // Fleet. Vehicle is named after its license plate, so `name` is the plate itself.
   { key: 'vehicle', section: 'Masters', title: 'Vehicles', doctype: 'Vehicle', icon: Car, orderBy: 'modified desc', currencyField: '',
@@ -131,10 +151,17 @@ LISTS.push(
       { label: 'License Plate', field: 'name' },
       { label: 'Make', field: 'make' },
       { label: 'Model', field: 'model' },
-      { label: 'Fuel', field: 'fuel_type', type: 'kind' },
-      { label: 'Odometer', field: 'last_odometer' },
+      { label: 'Trailer', field: 'custom_trailer_plate' },
+      { label: 'Driver', field: 'custom_driver_name' },
+      { label: 'Transporter', field: 'custom_transporter', type: 'kind' },
     ],
     create: { doctype: 'Vehicle', title: 'New Vehicle', label: 'Vehicle',
+      // Compartments travel with the vehicle onto every transport document.
+      child: { fieldname: 'custom_vehicle_compartments', title: 'Compartments',
+        columns: [
+          { fieldname: 'name1', label: 'Compartment', fieldtype: 'data', flex: 2 },
+          { fieldname: 'qty', label: 'Capacity', fieldtype: 'float', flex: 1 },
+        ] },
       fields: [
         { fieldname: 'license_plate', label: 'License Plate', fieldtype: 'data' },
         { fieldname: 'make', label: 'Make', fieldtype: 'data' },
@@ -145,21 +172,38 @@ LISTS.push(
         { fieldname: 'acquisition_date', label: 'Acquisition Date', fieldtype: 'date', default: 'today' },
         { fieldname: 'vehicle_value', label: 'Vehicle Value', fieldtype: 'currency' },
         { fieldname: 'chassis_no', label: 'Chassis No', fieldtype: 'data' },
+        { fieldname: 'custom_trailer_plate', label: 'Trailer Plate', fieldtype: 'data' },
+        { fieldname: 'custom_transporter', label: 'Transporter', fieldtype: 'data' },
+        { fieldname: 'custom_driver', label: 'Driver', fieldtype: 'data' },
+        { fieldname: 'custom_driver_id', label: 'Driver ID', fieldtype: 'data' },
+        { fieldname: 'custom_driver_contact', label: 'Driver Contact', fieldtype: 'data' },
+        { fieldname: 'custom_default_warehouse', label: 'Default Warehouse', fieldtype: 'link', options: 'Warehouse', filters: { is_group: 0 } },
         { fieldname: 'location', label: 'Location', fieldtype: 'data' },
-        { fieldname: 'color', label: 'Colour', fieldtype: 'data' },
         COMPANY,
       ] } },
   { key: 'supplier', section: 'Masters', title: 'Suppliers', doctype: 'Supplier', icon: Factory, orderBy: 'modified desc', currencyField: 'default_currency',
     columns: [
       { label: 'Supplier', field: 'name' },
+      { label: 'Type', field: 'supplier_type', type: 'kind' },
       { label: 'Group', field: 'supplier_group' },
       { label: 'Tax ID', field: 'tax_id' },
     ],
     create: { doctype: 'Supplier', title: 'New Supplier', label: 'Supplier',
       fields: [
         { fieldname: 'supplier_name', label: 'Supplier Name', fieldtype: 'data' },
+        { fieldname: 'supplier_type', label: 'Type', fieldtype: 'select', selectOptions: sel(['Company', 'Individual', 'Partnership']), default: 'Company' },
         { fieldname: 'supplier_group', label: 'Supplier Group', fieldtype: 'link', options: 'Supplier Group' },
+        { fieldname: 'default_currency', label: 'Currency', fieldtype: 'link', options: 'Currency' },
         { fieldname: 'tax_id', label: 'Tax ID / PIN', fieldtype: 'data' },
+        // Contact
+        { fieldname: 'mobile_no', label: 'Mobile', fieldtype: 'data' },
+        { fieldname: 'email_id', label: 'Email', fieldtype: 'data' },
+        // Compliance / KYC
+        { fieldname: 'kamil_license_number', label: 'License Number', fieldtype: 'data' },
+        { fieldname: 'kamil_license_expiry', label: 'License Expiry', fieldtype: 'date' },
+        { fieldname: 'kamil_license_file', label: 'Trading / Business License', fieldtype: 'attach' },
+        { fieldname: 'kamil_certificate_of_incorporation', label: 'Certificate of Incorporation', fieldtype: 'attach' },
+        { fieldname: 'kamil_cr12', label: 'CR12', fieldtype: 'attach' },
       ] } },
 )
 

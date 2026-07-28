@@ -138,9 +138,10 @@ async function load() {
   }
 }
 
-watch(show, (v) => {
-  if (v) load()
-})
+// `immediate` matters: the dialog is rendered with v-if, so it mounts with `show`
+// already true and a plain watcher would never fire — leaving the form thinking it
+// had no permission to create anything.
+watch(show, (v) => v && load(), { immediate: true })
 
 function clean() {
   const out = {}

@@ -22,6 +22,14 @@
           :modelValue="row[col.fieldname]"
           @update:modelValue="(v) => set(i, col.fieldname, v)"
         />
+        <!-- Amount is qty x rate: derived, never typed, so it cannot disagree
+             with the figures beside it or with what the server recalculates. -->
+        <div v-else-if="col.fieldtype === 'amount'">
+          <div class="text-[10px] leading-none text-ink-gray-5">{{ col.label }}</div>
+          <div class="mt-1.5 truncate text-sm font-medium tabular-nums text-ink-gray-8">
+            {{ money(amountOf(row)) }}
+          </div>
+        </div>
         <FormControl
           v-else
           :type="col.fieldtype === 'float' || col.fieldtype === 'currency' ? 'number' : 'text'"
@@ -34,9 +42,16 @@
         <template #icon><Trash class="h-4 w-4 text-ink-gray-6" /></template>
       </Button>
     </div>
-    <Button variant="subtle" label="Add row" @click="add">
-      <template #prefix><Plus class="h-4 w-4" /></template>
-    </Button>
+
+    <div class="flex items-center justify-between gap-3 px-1">
+      <Button variant="subtle" label="Add row" @click="add">
+        <template #prefix><Plus class="h-4 w-4" /></template>
+      </Button>
+      <div v-if="hasAmount" class="text-sm">
+        <span class="text-ink-gray-5">Total</span>
+        <span class="ml-2 font-semibold tabular-nums text-ink-gray-9">{{ money(total) }}</span>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -59,6 +74,23 @@ const props = defineProps({
 })
 
 const rateCol = computed(() => props.columns.find((c) => c.fieldtype === 'currency'))
+const qtyCol = computed(() => props.columns.find((c) => c.fieldname === 'qty'))
+const hasAmount = computed(() => props.columns.some((c) => c.fieldtype === 'amount'))
+
+function amountOf(row) {
+  const qty = Number(row[qtyCol.value?.fieldname || 'qty']) || 0
+  const rate = Number(row[rateCol.value?.fieldname || 'rate']) || 0
+  return qty * rate
+}
+const total = computed(() => rows.value.reduce((sum, r) => sum + amountOf(r), 0))
+
+function money(v) {
+  try {
+    return new Intl.NumberFormat('en-KE', { maximumFractionDigits: 2 }).format(v || 0)
+  } catch {
+    return v
+  }
+}
 
 async function fetchRate(i, itemCode) {
   if (!props.doctype || !itemCode) return
