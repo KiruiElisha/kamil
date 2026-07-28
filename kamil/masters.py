@@ -363,6 +363,49 @@ _EMAIL_FIELDS = (
 	"awaiting_password",
 )
 
+# Kamil's mail is hosted on Zoho, so a mailbox that is being set up for the first time
+# starts on Zoho's standard servers and the user only has to supply a password. The
+# other presets are here so the same screen still works for a mailbox hosted elsewhere.
+EMAIL_PROVIDERS = {
+	"Zoho Mail": {
+		"smtp_server": "smtp.zoho.com",
+		"smtp_port": 587,
+		"use_tls": 1,
+		"use_ssl_for_outgoing": 0,
+		"email_server": "imap.zoho.com",
+		"use_imap": 1,
+		"use_ssl": 1,
+		"incoming_port": 993,
+	},
+	"Gmail": {
+		"smtp_server": "smtp.gmail.com",
+		"smtp_port": 587,
+		"use_tls": 1,
+		"use_ssl_for_outgoing": 0,
+		"email_server": "imap.gmail.com",
+		"use_imap": 1,
+		"use_ssl": 1,
+		"incoming_port": 993,
+	},
+	"Microsoft 365": {
+		"smtp_server": "smtp.office365.com",
+		"smtp_port": 587,
+		"use_tls": 1,
+		"use_ssl_for_outgoing": 0,
+		"email_server": "outlook.office365.com",
+		"use_imap": 1,
+		"use_ssl": 1,
+		"incoming_port": 993,
+	},
+}
+DEFAULT_EMAIL_PROVIDER = "Zoho Mail"
+
+
+def _provider_presets() -> list:
+	"""Server settings offered by the email screen, the default one first."""
+	names = [DEFAULT_EMAIL_PROVIDER] + [p for p in EMAIL_PROVIDERS if p != DEFAULT_EMAIL_PROVIDER]
+	return [{"name": name, "values": EMAIL_PROVIDERS[name]} for name in names]
+
 
 def _my_email_address() -> str:
 	"""The signed-in user's own email address."""
@@ -382,14 +425,15 @@ def get_my_email_account() -> dict:
 	"""The current user's own Email Account, if they have set one up."""
 	address = _my_email_address()
 	name = _my_email_account_name()
+	presets = {"providers": _provider_presets(), "default_provider": DEFAULT_EMAIL_PROVIDER}
 	if not name:
-		return {"exists": False, "email_id": address}
+		return {"exists": False, "email_id": address, **presets}
 
 	doc = frappe.get_doc("Email Account", name)
 	if not doc.has_permission("read"):
-		return {"exists": False, "email_id": address}
+		return {"exists": False, "email_id": address, **presets}
 
-	data = {"exists": True, "name": doc.name}
+	data = {"exists": True, "name": doc.name, **presets}
 	for field in _EMAIL_FIELDS:
 		data[field] = doc.get(field)
 	# Never return the password, encrypted or otherwise.
@@ -428,6 +472,16 @@ def save_my_email_account(values: str | dict) -> dict:
 		if field in values and field != "email_id":
 			doc.set(field, values[field])
 	doc.email_id = address  # pinned to the session user, never taken from the payload
+
+	# Server settings left blank fall back to the house provider (Zoho), so supplying
+	# a password is enough to get a working mailbox.
+	defaults = EMAIL_PROVIDERS[DEFAULT_EMAIL_PROVIDER]
+	if cint(doc.enable_outgoing) and not doc.smtp_server:
+		for field in ("smtp_server", "smtp_port", "use_tls", "use_ssl_for_outgoing"):
+			doc.set(field, defaults[field])
+	if cint(doc.enable_incoming) and not doc.email_server:
+		for field in ("email_server", "use_imap", "use_ssl", "incoming_port"):
+			doc.set(field, defaults[field])
 
 	password = values.get("password")
 	if password:

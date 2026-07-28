@@ -20,14 +20,18 @@ declare module 'vue' {
     ItemsTable: typeof import('./src/components/ItemsTable.vue')['default']
     LinkField: typeof import('./src/components/LinkField.vue')['default']
     ListInsights: typeof import('./src/components/ListInsights.vue')['default']
+    ListReport: typeof import('./src/components/ListReport.vue')['default']
     NotificationBell: typeof import('./src/components/NotificationBell.vue')['default']
     PaymentDialog: typeof import('./src/components/dialogs/PaymentDialog.vue')['default']
     PaymentRequestDialog: typeof import('./src/components/dialogs/PaymentRequestDialog.vue')['default']
+    QuickEntryDialog: typeof import('./src/components/dialogs/QuickEntryDialog.vue')['default']
     RankList: typeof import('./src/components/RankList.vue')['default']
     RecentList: typeof import('./src/components/RecentList.vue')['default']
+    ReportTable: typeof import('./src/components/ReportTable.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     Skeleton: typeof import('./src/components/Skeleton.vue')['default']
+    StatCard: typeof import('./src/components/StatCard.vue')['default']
     UserDialog: typeof import('./src/components/dialogs/UserDialog.vue')['default']
   }
 }

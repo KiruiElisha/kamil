@@ -13,10 +13,12 @@ stripped-down site and on the full Kamil Energy production setup.
 """
 
 import json
+import re
 
 import frappe
 from frappe import _
-from frappe.utils import flt, nowdate
+from frappe.model.workflow import get_workflow_name
+from frappe.utils import cint, flt, nowdate
 
 # Transport custom fields captured on the order and carried onto the invoice.
 # Applied only when present on the DocType (see ``_apply_transport``).
@@ -531,6 +533,65 @@ def search_link(doctype: str, txt: str = "", filters: str | dict | None = None):
 	return out
 
 
+# Fieldtypes a small in-line "create new" form cannot sensibly render.
+_QUICK_ENTRY_SKIP = (
+	"Section Break", "Column Break", "Tab Break", "HTML", "Table", "Table MultiSelect",
+	"Button", "Image", "Fold", "Heading", "Attach", "Attach Image", "Signature",
+	"Geolocation", "Barcode", "Code", "Markdown Editor", "Text Editor", "HTML Editor",
+	"Password", "Read Only", "Rating", "Duration", "Icon", "Color",
+)
+_QUICK_ENTRY_MAX_FIELDS = 12
+
+
+@frappe.whitelist()
+def get_quick_entry(doctype: str) -> dict:
+	"""The few fields needed to create a record of `doctype` from a link field.
+
+	Same idea as the desk's Quick Entry: everything mandatory, plus anything the
+	doctype explicitly marks for quick entry. `can_create` is what the UI gates the
+	"Create new" option on — the insert itself is still permission-checked by Frappe.
+	"""
+	out = {"doctype": doctype, "label": _(doctype), "can_create": False, "fields": [], "prompt_name": False}
+	if not doctype or not frappe.db.exists("DocType", doctype):
+		return out
+
+	out["can_create"] = bool(frappe.has_permission(doctype, "create"))
+	if not out["can_create"]:
+		return out
+
+	meta = frappe.get_meta(doctype)
+	out["prompt_name"] = (meta.autoname or "").lower() == "prompt"
+	out["title_field"] = meta.title_field or None
+
+	fields = []
+	for df in meta.fields:
+		if df.fieldtype in _QUICK_ENTRY_SKIP or df.hidden or df.read_only:
+			continue
+		if not (df.reqd or df.allow_in_quick_entry):
+			continue
+		if df.fieldname in ("naming_series",) and df.default:
+			continue
+		fields.append(
+			{
+				"fieldname": df.fieldname,
+				"label": _(df.label or df.fieldname),
+				"fieldtype": df.fieldtype,
+				"options": df.options or "",
+				"reqd": cint(df.reqd),
+				"default": df.default or "",
+				# Select options travel as a list so the UI can render them directly.
+				"select_options": [
+					{"label": o.strip(), "value": o.strip()}
+					for o in (df.options or "").split("\n")
+					if df.fieldtype == "Select" and o.strip()
+				],
+			}
+		)
+
+	out["fields"] = fields[:_QUICK_ENTRY_MAX_FIELDS]
+	return out
+
+
 @frappe.whitelist()
 def create_document(doctype: str, values: str | dict | None = None):
 	"""Insert a draft document (incl. child tables) from the create modal."""
@@ -581,8 +642,89 @@ def get_create_defaults() -> dict:
 def submit_document(doctype: str, name: str) -> dict:
 	"""Submit a draft document from the in-app viewer."""
 	doc = frappe.get_doc(doctype, name)
+	if get_workflow_name(doc.doctype):
+		frappe.throw(
+			_("{0} is driven by a workflow — use its approval actions instead of submitting.").format(_(doctype))
+		)
 	doc.submit()
 	return {"name": doc.name, "docstatus": doc.docstatus}
+
+
+@frappe.whitelist()
+def get_doc_actions(doctype: str, name: str) -> dict:
+	"""Which actions the in-app viewer may offer for a document.
+
+	When an active workflow owns the doctype, the plain Submit button must not be
+	shown at all — the document may only move through the workflow's transitions,
+	and a direct submit would side-step the approvals it exists to enforce.
+	"""
+	out = {
+		"docstatus": 0,
+		"is_submittable": False,
+		"can_submit": False,
+		"can_cancel": False,
+		"workflow": None,
+		"workflow_state": None,
+		"transitions": [],
+	}
+	if not doctype or not name or not frappe.db.exists("DocType", doctype):
+		return out
+
+	doc = frappe.get_doc(doctype, name)
+	doc.check_permission("read")
+	meta = frappe.get_meta(doctype)
+	out["docstatus"] = cint(doc.docstatus)
+	out["is_submittable"] = bool(meta.is_submittable)
+
+	workflow = get_workflow_name(doctype)
+	if workflow:
+		from frappe.model.workflow import get_transitions
+
+		state_field = frappe.db.get_value("Workflow", workflow, "workflow_state_field")
+		out["workflow"] = workflow
+		out["workflow_state"] = doc.get(state_field) if state_field else None
+		try:
+			out["transitions"] = [
+				{"action": t.get("action"), "next_state": t.get("next_state")}
+				for t in (get_transitions(doc) or [])
+			]
+		except Exception:
+			# No state set yet, or the user holds none of the transition roles.
+			out["transitions"] = []
+		return out
+
+	out["can_submit"] = bool(
+		meta.is_submittable and cint(doc.docstatus) == 0 and frappe.has_permission(doctype, "submit", doc=doc)
+	)
+	out["can_cancel"] = bool(
+		meta.is_submittable and cint(doc.docstatus) == 1 and frappe.has_permission(doctype, "cancel", doc=doc)
+	)
+	return out
+
+
+@frappe.whitelist()
+def apply_workflow_action(doctype: str, name: str, action: str) -> dict:
+	"""Move a document along its workflow (Approve / Reject / …).
+
+	Frappe checks the transition's role and self-approval rules itself, so this only
+	has to make sure the caller may read the document in the first place.
+	"""
+	from frappe.model.workflow import apply_workflow
+
+	doc = frappe.get_doc(doctype, name)
+	doc.check_permission("read")
+
+	workflow = get_workflow_name(doctype)
+	if not workflow:
+		frappe.throw(_("{0} has no active workflow.").format(_(doctype)))
+
+	updated = apply_workflow(doc, action)
+	state_field = frappe.db.get_value("Workflow", workflow, "workflow_state_field")
+	return {
+		"name": updated.name,
+		"docstatus": cint(updated.docstatus),
+		"workflow_state": updated.get(state_field) if state_field else None,
+	}
 
 
 @frappe.whitelist()
@@ -596,94 +738,37 @@ def send_document_whatsapp(
 ) -> dict:
 	"""Send a document's PDF to its party via WhatsApp.
 
-	Without `print_format` we delegate to the integration (its default behaviour).
-	With one, we build the PDF from that format and hand it to the same media sender.
+	The transport lives in ``kamil.whatsapp``: it wakes the gateway before sending and
+	retries on the timeouts a sleeping gateway produces. See that module for why the
+	integration app's own sender is not used directly.
 	"""
-	if not print_format:
-		from whatsapp_integration.api.whatsapp.whatsapp import send_document_via_whatsapp
+	from kamil.whatsapp import send_document
 
-		result = send_document_via_whatsapp(
-			doctype, name, phone_number=phone_number or None, message=message or None, sender=sender or None
-		)
-		return result or {"success": True}
-
-	from frappe.utils import now_datetime
-	from frappe.utils.pdf import get_pdf
-	from whatsapp_integration.api.files import save_private_pdf
-	from whatsapp_integration.api.whatsapp.validators import validate_phone_number, validate_user_permissions
-	from whatsapp_integration.api.whatsapp.whatsapp import (
-		_finalize_send,
-		make_html_pdf_ready,
-		normalize_phone_number,
-	)
-	from whatsapp_integration.service.rest import send_whatsapp_media
-
-	validate_user_permissions(frappe.session.user, "send_message")
-
-	if not phone_number:
-		phone_number = resolve_document_phone(doctype, name)
-	if not phone_number:
-		frappe.throw(_("Please provide a phone number."))
-	phone_number = normalize_phone_number(phone_number)
-	validate_phone_number(phone_number)
-
-	try:
-		html = frappe.get_print(doctype, name, print_format=print_format, no_letterhead=0)
-		html = make_html_pdf_ready(html)
-		pdf_content = get_pdf(
-			html,
-			options={
-				"load-error-handling": "ignore",
-				"load-media-error-handling": "ignore",
-				"no-stop-slow-scripts": True,
-				"quiet": "",
-			},
-		)
-	except Exception as e:
-		frappe.log_error(frappe.get_traceback(), "Kamil WhatsApp PDF Generation Failed")
-		return {
-			"success": False,
-			"status": "pdf_error",
-			"error": _("Could not generate PDF for {0} {1}: {2}").format(doctype, name, str(e)),
-		}
-
-	file_name = f"{doctype}_{name}_{now_datetime().strftime('%Y%m%d_%H%M%S')}.pdf"
-	file_name = file_name.replace(" ", "_").replace("/", "-")
-	file_doc, media_url = save_private_pdf(
-		pdf_content, file_name, attached_to_doctype=doctype, attached_to_name=name
-	)
-	if not file_doc.file_url:
-		frappe.throw(_("Failed to generate file URL for the WhatsApp attachment."))
-
-	if not message:
-		message = _("Please find attached {0}: {1}").format(doctype, name)
-
-	response = send_whatsapp_media(
-		to_number=phone_number,
-		message=message,
-		media_url=media_url,
-		file_name=file_name.replace(".pdf", ""),
-		country_name=None,
+	return send_document(
+		doctype,
+		name,
+		phone_number=phone_number or None,
+		message=message or None,
 		sender=sender or None,
-		reference_doctype=doctype,
-		reference_name=name,
+		print_format=print_format or None,
 	)
 
-	return _finalize_send(
-		response,
-		phone_number,
-		title="WhatsApp Document Send Failed",
-		success_msg=_("Document {0} sent to {1} via WhatsApp.").format(name, phone_number),
-		log_context=f"Document: {doctype} {name} ({print_format})",
-		notify=0,
-		silent=True,
-	)
+
+@frappe.whitelist()
+def warm_whatsapp() -> dict:
+	"""Ping the WhatsApp gateway so it is awake before the user presses Send."""
+	from kamil.whatsapp import warm_gateway
+
+	return warm_gateway()
 
 
 @frappe.whitelist()
 def list_whatsapp_senders() -> list:
 	"""WhatsApp sender numbers available to the current user (for the sender picker)."""
-	from whatsapp_integration.api.whatsapp.whatsapp import get_whatsapp_senders
+	try:
+		from whatsapp_integration.api.whatsapp.whatsapp import get_whatsapp_senders
+	except ImportError:
+		return []
 
 	rows = get_whatsapp_senders() or []
 	return [{"label": r.get("label") or r.get("value"), "value": r.get("value")} for r in rows]
@@ -1018,32 +1103,32 @@ def get_list_kpis(doctype: str, company: str | None = None) -> dict:
 	candidates = []
 	if amount_field and date_field:
 		submitted_month = period(date_field, month_start, month_end) + [["docstatus", "=", 1]]
-		candidates.append({"label": "This month", "value": _agg_sum(doctype, submitted_month, amount_field), "money": True, "color": "green"})
-		candidates.append({"label": "This month (count)", "value": _agg_count(doctype, submitted_month), "money": False, "color": "blue"})
+		candidates.append({"label": "This month", "value": _agg_sum(doctype, submitted_month, amount_field), "money": True, "color": "green", "icon": "calendar"})
+		candidates.append({"label": "This month (count)", "value": _agg_count(doctype, submitted_month), "money": False, "color": "blue", "icon": "file-text"})
 
 	if meta.has_field("outstanding_amount"):
 		f = base + [["docstatus", "=", 1], ["outstanding_amount", ">", 0]]
-		candidates.append({"label": "Outstanding", "value": _agg_sum(doctype, f, "outstanding_amount"), "money": True, "color": "amber"})
+		candidates.append({"label": "Outstanding", "value": _agg_sum(doctype, f, "outstanding_amount"), "money": True, "color": "amber", "icon": "wallet"})
 
 	if submittable:
-		candidates.append({"label": "Drafts", "value": _agg_count(doctype, base + [["docstatus", "=", 0]]), "money": False, "color": "orange"})
+		candidates.append({"label": "Drafts", "value": _agg_count(doctype, base + [["docstatus", "=", 0]]), "money": False, "color": "orange", "icon": "clock"})
 
 	if amount_field and date_field:
 		f = period(date_field, year_start) + [["docstatus", "=", 1]]
-		candidates.append({"label": "This year", "value": _agg_sum(doctype, f, amount_field), "money": True, "color": "green"})
+		candidates.append({"label": "This year", "value": _agg_sum(doctype, f, amount_field), "money": True, "color": "green", "icon": "trending-up"})
 
 	if submittable:
-		candidates.append({"label": "Submitted", "value": _agg_count(doctype, base + [["docstatus", "=", 1]]), "money": False, "color": "blue"})
+		candidates.append({"label": "Submitted", "value": _agg_count(doctype, base + [["docstatus", "=", 1]]), "money": False, "color": "blue", "icon": "send"})
 
 	if meta.has_field("disabled"):
-		candidates.append({"label": "Active", "value": _agg_count(doctype, base + [["disabled", "=", 0]]), "money": False, "color": "green"})
+		candidates.append({"label": "Active", "value": _agg_count(doctype, base + [["disabled", "=", 0]]), "money": False, "color": "green", "icon": "check-circle"})
 
-	candidates.append({"label": "Total records", "value": _agg_count(doctype, base), "money": False, "color": "blue"})
+	candidates.append({"label": "Total records", "value": _agg_count(doctype, base), "money": False, "color": "blue", "icon": "layers"})
 
 	if meta.has_field("disabled"):
-		candidates.append({"label": "Disabled", "value": _agg_count(doctype, base + [["disabled", "=", 1]]), "money": False, "color": "orange"})
+		candidates.append({"label": "Disabled", "value": _agg_count(doctype, base + [["disabled", "=", 1]]), "money": False, "color": "orange", "icon": "ban"})
 
-	candidates.append({"label": "Added this month", "value": _agg_count(doctype, base + [["creation", ">=", month_start]]), "money": False, "color": "amber"})
+	candidates.append({"label": "Added this month", "value": _agg_count(doctype, base + [["creation", ">=", month_start]]), "money": False, "color": "amber", "icon": "plus-circle"})
 
 	return {"currency": _currency_for(company), "kpis": candidates[:4]}
 
@@ -1109,6 +1194,17 @@ def get_cancellation_reason(doctype: str, name: str) -> dict:
 	}
 
 
+def _link_options(fieldtype, options):
+	"""Target doctype of a Link column, so the app can drill down from a cell.
+
+	Only kept for link-ish columns — a Select's options are a newline-separated list
+	of values and would only bloat the response.
+	"""
+	if fieldtype not in ("Link", "Dynamic Link"):
+		return ""
+	return (options or "").strip() if isinstance(options, str) else ""
+
+
 @frappe.whitelist()
 def run_report(report: str, filters: str | dict | None = None, limit: int = 500) -> dict:
 	"""Run a standard query report and return normalised columns/rows for the app."""
@@ -1131,8 +1227,17 @@ def run_report(report: str, filters: str | dict | None = None, limit: int = 500)
 			# legacy "Label:Type/Options:Width"
 			parts = col.split(":")
 			label = parts[0]
-			fieldtype = (parts[1].split("/")[0] if len(parts) > 1 else "Data") or "Data"
-			columns.append({"label": label, "fieldname": frappe.scrub(label), "fieldtype": fieldtype})
+			spec = (parts[1] if len(parts) > 1 else "Data") or "Data"
+			fieldtype = spec.split("/")[0] or "Data"
+			options = spec.split("/")[1] if "/" in spec else ""
+			columns.append(
+				{
+					"label": label,
+					"fieldname": frappe.scrub(label),
+					"fieldtype": fieldtype,
+					"options": _link_options(fieldtype, options),
+				}
+			)
 		else:
 			label = col.get("label") or col.get("fieldname") or ""
 			columns.append(
@@ -1140,6 +1245,7 @@ def run_report(report: str, filters: str | dict | None = None, limit: int = 500)
 					"label": label,
 					"fieldname": col.get("fieldname") or frappe.scrub(label),
 					"fieldtype": col.get("fieldtype") or "Data",
+					"options": _link_options(col.get("fieldtype"), col.get("options")),
 				}
 			)
 
@@ -1170,23 +1276,8 @@ def get_status_options(doctype: str) -> list:
 	return [{"label": "All statuses", "value": ""}] + [{"label": o, "value": o} for o in options]
 
 
-@frappe.whitelist()
-def export_report(
-	report: str,
-	filters: str | dict | None = None,
-	file_format: str = "Excel",
-	columns: str | list | None = None,
-) -> None:
-	"""Stream a query report as .xlsx (or .csv) download.
-
-	`columns` optionally restricts the export to a subset of fieldnames, so a download
-	matches the columns the user chose to keep on screen.
-	"""
-	data = run_report(report, filters, limit=100000)
-	all_columns = data.get("columns") or []
-	rows = data.get("rows") or []
-
-	wanted = columns
+def _pick_columns(all_columns: list, wanted: str | list | None) -> list:
+	"""Narrow a column set to the fieldnames the user kept on screen."""
 	if isinstance(wanted, str):
 		try:
 			wanted = frappe.parse_json(wanted)
@@ -1194,17 +1285,92 @@ def export_report(
 			wanted = [c.strip() for c in wanted.split(",") if c.strip()]
 	if isinstance(wanted, list) and wanted:
 		keep = set(wanted)
-		columns = [c for c in all_columns if c.get("fieldname") in keep] or all_columns
-	else:
-		columns = all_columns
+		return [c for c in all_columns if c.get("fieldname") in keep] or all_columns
+	return all_columns
+
+
+_NUMERIC_FIELDTYPES = ("Currency", "Float", "Int", "Percent")
+
+
+def _display_value(value, column, currency) -> str:
+	"""Value as the user sees it on screen — used by the CSV/PDF renderers."""
+	if value is None or value == "":
+		return ""
+	fieldtype = column.get("fieldtype") or "Data"
+	try:
+		if fieldtype == "Currency":
+			return frappe.utils.fmt_money(flt(value), currency=currency)
+		if fieldtype in ("Float", "Percent"):
+			return frappe.utils.fmt_money(flt(value), precision=2)
+		if fieldtype == "Int":
+			return str(cint(value))
+		if fieldtype in ("Date", "Datetime"):
+			return frappe.utils.formatdate(value)
+	except Exception:
+		return str(value)
+	# Query reports may hand back anchor tags; the export wants plain text.
+	return re.sub(r"<[^>]*>", "", str(value)).strip()
+
+
+def _report_pdf(title: str, columns: list, rows: list, currency: str | None) -> bytes:
+	from frappe.utils.pdf import get_pdf
+
+	head = "".join(
+		'<th class="{cls}">{label}</th>'.format(
+			cls="num" if c.get("fieldtype") in _NUMERIC_FIELDTYPES else "",
+			label=frappe.utils.escape_html(str(c.get("label") or c.get("fieldname") or "")),
+		)
+		for c in columns
+	)
+
+	body = []
+	for row in rows:
+		cells = []
+		for c in columns:
+			numeric = c.get("fieldtype") in _NUMERIC_FIELDTYPES
+			text = frappe.utils.escape_html(_display_value(row.get(c["fieldname"]), c, currency))
+			cells.append(f'<td class="{"num" if numeric else ""}">{text}</td>')
+		# Report rows carry their own indentation for tree-style statements.
+		indent = cint(row.get("indent"))
+		style = f' style="padding-left:{indent * 12}px"' if indent else ""
+		body.append("<tr>" + "".join(cells).replace("<td", f"<td{style}", 1) + "</tr>")
+
+	html = f"""
+	<style>
+		body {{ font-family: Helvetica, Arial, sans-serif; font-size: 8pt; color: #1f272e; }}
+		h3 {{ margin: 0 0 2px 0; font-size: 12pt; }}
+		.meta {{ color: #6b7580; font-size: 7.5pt; margin-bottom: 8px; }}
+		table {{ width: 100%; border-collapse: collapse; }}
+		th {{ background: #f4f5f6; text-align: left; font-weight: 600; }}
+		th, td {{ border: 0.5pt solid #dfe1e3; padding: 3px 5px; }}
+		tbody tr:nth-child(even) td {{ background: #fafbfc; }}
+		.num {{ text-align: right; }}
+	</style>
+	<h3>{frappe.utils.escape_html(title)}</h3>
+	<div class="meta">{frappe.utils.escape_html(frappe.utils.formatdate(nowdate()))} · {len(rows)} rows</div>
+	<table><thead><tr>{head}</tr></thead><tbody>{"".join(body)}</tbody></table>
+	"""
+
+	# Landscape: these reports are wide, and portrait would shrink them to nothing.
+	return get_pdf(html, {"orientation": "Landscape", "page-size": "A4", "margin-top": "12mm"})
+
+
+def _stream_export(title: str, columns: list, rows: list, file_format: str, currency: str | None) -> None:
+	"""Put a CSV / Excel / PDF rendering of a report on the current response."""
+	safe_name = (title or "report").replace(" ", "_").replace("/", "-")
+	fmt = (file_format or "excel").lower()
+
+	if fmt == "pdf":
+		frappe.response["filename"] = f"{safe_name}.pdf"
+		frappe.response["filecontent"] = _report_pdf(title, columns, rows, currency)
+		frappe.response["type"] = "pdf"
+		return
 
 	matrix = [[c.get("label") or c.get("fieldname") for c in columns]]
 	for row in rows:
 		matrix.append([("" if row.get(c["fieldname"]) is None else row.get(c["fieldname"])) for c in columns])
 
-	safe_name = (report or "report").replace(" ", "_").replace("/", "-")
-
-	if (file_format or "").lower() == "csv":
+	if fmt == "csv":
 		from frappe.utils.csvutils import to_csv
 
 		frappe.response["result"] = to_csv(matrix)
@@ -1218,6 +1384,46 @@ def export_report(
 	frappe.response["filename"] = f"{safe_name}.xlsx"
 	frappe.response["filecontent"] = xlsx_file.getvalue()
 	frappe.response["type"] = "binary"
+
+
+@frappe.whitelist()
+def export_report(
+	report: str,
+	filters: str | dict | None = None,
+	file_format: str = "Excel",
+	columns: str | list | None = None,
+) -> None:
+	"""Stream a query report as .xlsx, .csv or .pdf download.
+
+	`columns` optionally restricts the export to a subset of fieldnames, so a download
+	matches the columns the user chose to keep on screen.
+	"""
+	data = run_report(report, filters, limit=100000)
+	_stream_export(
+		report,
+		_pick_columns(data.get("columns") or [], columns),
+		data.get("rows") or [],
+		file_format,
+		data.get("currency"),
+	)
+
+
+@frappe.whitelist()
+def export_doc_report(
+	doctype: str,
+	filters: str | dict | None = None,
+	file_format: str = "Excel",
+	columns: str | list | None = None,
+) -> None:
+	"""Same downloads as the query reports, for a list view's Report tab."""
+	data = get_doc_report(doctype, filters, limit=100000)
+	_stream_export(
+		doctype,
+		_pick_columns(data.get("columns") or [], columns),
+		data.get("rows") or [],
+		file_format,
+		data.get("currency"),
+	)
 
 
 _SELLING_DOCTYPES = ("Quotation", "Sales Order", "Delivery Note", "Sales Invoice")
@@ -1549,7 +1755,14 @@ def get_doc_report(doctype: str, filters: str | dict | None = None, limit: int =
 		if df.fieldtype not in _REPORT_SAFE_FIELDTYPES:
 			return
 		seen.add(df.fieldname)
-		columns.append({"label": _(df.label or df.fieldname), "fieldname": df.fieldname, "fieldtype": df.fieldtype})
+		columns.append(
+			{
+				"label": _(df.label or df.fieldname),
+				"fieldname": df.fieldname,
+				"fieldtype": df.fieldtype,
+				"options": _link_options(df.fieldtype, df.options),
+			}
+		)
 
 	for df in meta.fields:
 		if df.in_list_view:
@@ -1669,12 +1882,83 @@ _NOTIFICATION_SOURCES = (
 )
 
 
+# Notification Log types, mapped onto the app's indicator colours.
+_SYSTEM_NOTIFICATION_COLORS = {
+	"Mention": "blue",
+	"Assignment": "orange",
+	"Share": "blue",
+	"Alert": "red",
+	"Energy Point": "green",
+}
+_SYSTEM_NOTIFICATION_LIMIT = 20
+
+
+def _plain_text(html: str | None) -> str:
+	"""Notification subjects arrive as HTML fragments; the bell shows plain text."""
+	text = re.sub(r"<[^>]*>", " ", html or "")
+	text = text.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+	return re.sub(r"\s+", " ", text).strip()
+
+
+def _system_notifications(limit: int = _SYSTEM_NOTIFICATION_LIMIT) -> list:
+	"""The signed-in user's own Notification Log entries — the same mentions,
+	assignments, shares and alerts the desk bell shows."""
+	if not frappe.db.exists("DocType", "Notification Log"):
+		return []
+
+	try:
+		rows = frappe.get_all(
+			"Notification Log",
+			filters={"for_user": frappe.session.user},
+			fields=[
+				"name",
+				"subject",
+				"type",
+				"document_type",
+				"document_name",
+				"from_user",
+				"read",
+				"link",
+				"creation",
+			],
+			order_by="creation desc",
+			limit_page_length=cint(limit),
+		)
+	except Exception:
+		return []
+
+	senders = {}
+	for row in rows:
+		if row.from_user and row.from_user not in senders:
+			senders[row.from_user] = frappe.db.get_value("User", row.from_user, "full_name") or row.from_user
+
+	return [
+		{
+			"name": row.name,
+			"subject": _plain_text(row.subject),
+			"type": row.type or "Alert",
+			"doctype": row.document_type,
+			"document": row.document_name,
+			"from_user": row.from_user,
+			"from_user_name": senders.get(row.from_user),
+			"read": cint(row.read),
+			"link": row.link,
+			"creation": str(row.creation),
+			"color": _SYSTEM_NOTIFICATION_COLORS.get(row.type or "", "gray"),
+		}
+		for row in rows
+	]
+
+
 @frappe.whitelist()
 def get_notifications() -> dict:
-	"""Counts of things needing attention, for the header bell.
+	"""What the header bell shows: work that needs attention, plus the user's own
+	system notifications (mentions, assignments, shares, alerts).
 
 	Every count goes through frappe.get_list, so role and user permissions apply
-	and a user only ever sees totals for records they could open themselves.
+	and a user only ever sees totals for records they could open themselves. The
+	system notifications are filtered to the session user, so nobody sees anyone
+	else's.
 	"""
 	items = []
 	for doctype, label, statuses, color in _NOTIFICATION_SOURCES:
@@ -1694,7 +1978,47 @@ def get_notifications() -> dict:
 			}
 		)
 
-	return {"total": sum(i["count"] for i in items), "items": items}
+	system = _system_notifications()
+	unread = len([n for n in system if not n["read"]])
+	pending = sum(i["count"] for i in items)
+
+	return {
+		# `total` stays the badge number: pending work plus anything unread.
+		"total": pending + unread,
+		"pending_total": pending,
+		"unread": unread,
+		"items": items,
+		"system": system,
+	}
+
+
+@frappe.whitelist()
+def mark_notification_read(name: str) -> dict:
+	"""Mark one of the user's own notifications as read.
+
+	Frappe's own endpoint marks any log by name; this one refuses anything that is
+	not addressed to the session user.
+	"""
+	if not name:
+		return {"read": False}
+
+	for_user = frappe.db.get_value("Notification Log", name, "for_user")
+	if for_user != frappe.session.user:
+		frappe.throw(_("Not your notification."), frappe.PermissionError)
+
+	frappe.db.set_value("Notification Log", name, "read", 1, update_modified=False)
+	return {"read": True, "name": name}
+
+
+@frappe.whitelist()
+def mark_all_notifications_read() -> dict:
+	"""Clear the unread flag on every notification addressed to this user."""
+	names = frappe.get_all(
+		"Notification Log", filters={"for_user": frappe.session.user, "read": 0}, pluck="name"
+	)
+	if names:
+		frappe.db.set_value("Notification Log", {"name": ("in", names)}, "read", 1, update_modified=False)
+	return {"read": len(names)}
 
 
 # ---------------------------------------------------------------------------

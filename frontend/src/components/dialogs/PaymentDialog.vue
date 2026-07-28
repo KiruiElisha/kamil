@@ -17,7 +17,14 @@
           <span class="font-medium text-ink-gray-9">{{ money(selectedInvoice.outstanding, selectedInvoice.currency) }}</span>
         </div>
         <FormControl type="number" label="Amount" placeholder="Leave blank for full outstanding" v-model="amount" />
-        <ComboField label="Mode of payment" :options="modeOptions" :modelValue="modeName" @update:modelValue="(v) => (modeName = v || '')" />
+        <ComboField
+          label="Mode of payment"
+          :options="modeOptions"
+          create-doctype="Mode of Payment"
+          :modelValue="modeName"
+          @update:modelValue="(v) => (modeName = v || '')"
+          @created="loadModes"
+        />
         <ErrorMessage :message="error" />
       </div>
     </template>
@@ -66,13 +73,14 @@ async function loadInvoices() {
     invoiceOptions.value = []
   }
 }
-onMounted(async () => {
+async function loadModes() {
   try {
     modeOptions.value = (await call('kamil.api.list_modes_of_payment')) || []
   } catch {
     modeOptions.value = []
   }
-})
+}
+onMounted(loadModes)
 watch(show, (v) => {
   if (v) {
     error.value = ''

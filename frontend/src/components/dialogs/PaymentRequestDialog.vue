@@ -52,8 +52,10 @@
           <ComboField
             label="Mode of Payment"
             :options="modeOptions"
+            create-doctype="Mode of Payment"
             :modelValue="form.mode_of_payment"
             @update:modelValue="(v) => (form.mode_of_payment = v || '')"
+            @created="loadModes"
           />
           <FormControl type="text" label="Approver email" placeholder="approver@company.com" v-model="form.recipient" />
           <FormControl type="text" label="Approver WhatsApp (optional)" placeholder="+2547…" v-model="form.phone_number" />

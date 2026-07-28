@@ -14,6 +14,7 @@ import BookOpen from '~icons/lucide/book-open'
 import Send from '~icons/lucide/send'
 import Users from '~icons/lucide/users'
 import Factory from '~icons/lucide/factory'
+import Car from '~icons/lucide/car'
 
 export const SECTIONS = ['Selling', 'Buying', 'Inventory', 'Accounts', 'Masters']
 
@@ -123,6 +124,30 @@ LISTS.push(
         { fieldname: 'kamil_license_number', label: 'License Number', fieldtype: 'data' },
         { fieldname: 'kamil_license_expiry', label: 'License Expiry', fieldtype: 'date' },
         { fieldname: 'kamil_postal_address', label: 'Postal Address', fieldtype: 'data' },
+      ] } },
+  // Fleet. Vehicle is named after its license plate, so `name` is the plate itself.
+  { key: 'vehicle', section: 'Masters', title: 'Vehicles', doctype: 'Vehicle', icon: Car, orderBy: 'modified desc', currencyField: '',
+    columns: [
+      { label: 'License Plate', field: 'name' },
+      { label: 'Make', field: 'make' },
+      { label: 'Model', field: 'model' },
+      { label: 'Fuel', field: 'fuel_type', type: 'kind' },
+      { label: 'Odometer', field: 'last_odometer' },
+    ],
+    create: { doctype: 'Vehicle', title: 'New Vehicle', label: 'Vehicle',
+      fields: [
+        { fieldname: 'license_plate', label: 'License Plate', fieldtype: 'data' },
+        { fieldname: 'make', label: 'Make', fieldtype: 'data' },
+        { fieldname: 'model', label: 'Model', fieldtype: 'data' },
+        { fieldname: 'fuel_type', label: 'Fuel Type', fieldtype: 'select', selectOptions: sel(['Petrol', 'Diesel', 'Natural Gas', 'Electric']), default: 'Diesel' },
+        { fieldname: 'uom', label: 'Fuel UOM', fieldtype: 'link', options: 'UOM', default: 'Litre' },
+        { fieldname: 'last_odometer', label: 'Odometer Reading', fieldtype: 'float', default: 0 },
+        { fieldname: 'acquisition_date', label: 'Acquisition Date', fieldtype: 'date', default: 'today' },
+        { fieldname: 'vehicle_value', label: 'Vehicle Value', fieldtype: 'currency' },
+        { fieldname: 'chassis_no', label: 'Chassis No', fieldtype: 'data' },
+        { fieldname: 'location', label: 'Location', fieldtype: 'data' },
+        { fieldname: 'color', label: 'Colour', fieldtype: 'data' },
+        COMPANY,
       ] } },
   { key: 'supplier', section: 'Masters', title: 'Suppliers', doctype: 'Supplier', icon: Factory, orderBy: 'modified desc', currencyField: 'default_currency',
     columns: [

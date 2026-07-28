@@ -33,13 +33,31 @@
             mailbox to you.
           </p>
         </div>
+        <div v-if="providers.length">
+          <label class="mb-1 block text-xs text-ink-gray-5">Mail provider</label>
+          <div class="flex flex-wrap gap-2">
+            <Button
+              v-for="p in providers"
+              :key="p.name"
+              :variant="provider === p.name ? 'solid' : 'subtle'"
+              :label="p.name"
+              @click="applyProvider(p.name)"
+            />
+          </div>
+          <p class="mt-1 text-xs text-ink-gray-5">
+            Kamil's mail is hosted on {{ defaultProvider }}, so its servers are filled in for you.
+            Pick another provider to swap them, or edit the fields below by hand.
+          </p>
+        </div>
+
         <FormControl
           type="password"
           :label="account.exists ? 'Password (leave blank to keep the current one)' : 'Password / app password'"
           v-model="form.password"
         />
         <p class="text-xs text-ink-gray-5">
-          For Gmail and Microsoft 365 this must be an app password, not your normal sign-in password.
+          Zoho, Gmail and Microsoft 365 all expect an app-specific password here rather than your
+          normal sign-in password — generate one in your mailbox's security settings.
         </p>
 
         <!-- Outgoing -->
@@ -49,7 +67,7 @@
             <FormControl type="checkbox" label="Enabled" v-model="form.enable_outgoing" />
           </div>
           <div v-if="form.enable_outgoing" class="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <FormControl type="text" label="SMTP server" placeholder="smtp.gmail.com" v-model="form.smtp_server" />
+            <FormControl type="text" label="SMTP server" placeholder="smtp.zoho.com" v-model="form.smtp_server" />
             <FormControl type="number" label="Port" placeholder="587" v-model="form.smtp_port" />
             <FormControl type="checkbox" label="Use TLS" v-model="form.use_tls" />
             <FormControl type="checkbox" label="Use SSL" v-model="form.use_ssl_for_outgoing" />
@@ -63,7 +81,7 @@
             <FormControl type="checkbox" label="Enabled" v-model="form.enable_incoming" />
           </div>
           <div v-if="form.enable_incoming" class="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <FormControl type="text" label="Mail server" placeholder="imap.gmail.com" v-model="form.email_server" />
+            <FormControl type="text" label="Mail server" placeholder="imap.zoho.com" v-model="form.email_server" />
             <FormControl type="checkbox" label="Use IMAP" v-model="form.use_imap" />
             <FormControl type="checkbox" label="Use SSL" v-model="form.use_ssl" />
           </div>
@@ -102,6 +120,12 @@ const account = ref({ exists: false })
 // Pinned server-side to the signed-in user's address; shown, never edited.
 const myAddress = ref('')
 
+// Server presets come from the backend so the app and the API agree on what
+// "the default configuration" means. Zoho is Kamil's own provider.
+const providers = ref([])
+const defaultProvider = ref('Zoho Mail')
+const provider = ref('')
+
 const form = reactive({
   password: '',
   enable_outgoing: true,
@@ -113,7 +137,38 @@ const form = reactive({
   email_server: '',
   use_imap: true,
   use_ssl: true,
+  incoming_port: 993,
 })
+
+function presetFor(name) {
+  return (providers.value.find((p) => p.name === name) || {}).values || null
+}
+
+/** Which preset the current server settings match, if any — drives the highlight. */
+function detectProvider() {
+  const match = providers.value.find(
+    (p) =>
+      (form.smtp_server && p.values.smtp_server === form.smtp_server) ||
+      (form.email_server && p.values.email_server === form.email_server),
+  )
+  provider.value = match ? match.name : ''
+}
+
+function applyProvider(name) {
+  const values = presetFor(name)
+  if (!values) return
+  Object.assign(form, {
+    smtp_server: values.smtp_server,
+    smtp_port: values.smtp_port,
+    use_tls: !!values.use_tls,
+    use_ssl_for_outgoing: !!values.use_ssl_for_outgoing,
+    email_server: values.email_server,
+    use_imap: !!values.use_imap,
+    use_ssl: !!values.use_ssl,
+    incoming_port: values.incoming_port,
+  })
+  provider.value = name
+}
 
 async function load() {
   loading.value = true
@@ -122,6 +177,8 @@ async function load() {
     const res = await call('kamil.masters.get_my_email_account')
     account.value = res || { exists: false }
     myAddress.value = res?.email_id || ''
+    providers.value = res?.providers || []
+    defaultProvider.value = res?.default_provider || defaultProvider.value
     if (res?.exists) {
       Object.assign(form, {
         password: '',
@@ -134,7 +191,12 @@ async function load() {
         email_server: res.email_server || '',
         use_imap: !!res.use_imap,
         use_ssl: !!res.use_ssl,
+        incoming_port: res.incoming_port || 993,
       })
+      detectProvider()
+    } else {
+      // Nothing set up yet: start on the house provider so a password is all that's needed.
+      applyProvider(defaultProvider.value)
     }
   } catch (e) {
     error.value = e?.messages?.join(', ') || e?.message || 'Could not load your email settings.'
@@ -168,6 +230,7 @@ async function save() {
       email_server: form.email_server.trim(),
       use_imap: form.use_imap ? 1 : 0,
       use_ssl: form.use_ssl ? 1 : 0,
+      incoming_port: form.incoming_port || null,
     }
     // Only send a password when one was actually typed, so saving other changes
     // does not wipe the stored credential.
@@ -192,8 +255,8 @@ async function remove() {
     await call('kamil.masters.delete_my_email_account')
     notice.value = { ok: true, text: 'Email account removed.' }
     account.value = { exists: false }
-    Object.assign(form, { password: '', smtp_server: '', email_server: '' })
-    await load()
+    Object.assign(form, { password: '' })
+    await load() // re-seeds the form with the default provider's servers
   } catch (e) {
     error.value = e?.messages?.join(', ') || e?.message || 'Could not remove your email account.'
   } finally {

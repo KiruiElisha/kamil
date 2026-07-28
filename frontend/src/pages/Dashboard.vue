@@ -13,13 +13,14 @@
       </template>
       <template v-else>
         <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-          <div v-for="k in kpis" :key="k.key" class="rounded-xl border border-outline-gray-1 bg-surface-white p-4">
-            <div class="flex h-9 w-9 items-center justify-center rounded-lg" :class="CHIP[k.color]">
-              <component :is="k.icon" class="h-5 w-5" />
-            </div>
-            <div class="mt-3 truncate text-xl font-semibold text-ink-gray-9">{{ display(k) }}</div>
-            <div class="truncate text-sm text-ink-gray-5">{{ k.label }}</div>
-          </div>
+          <StatCard
+            v-for="k in kpis"
+            :key="k.key"
+            :label="k.label"
+            :value="display(k)"
+            :icon="k.icon"
+            :color="k.color"
+          />
         </div>
 
         <div class="h-80 rounded-xl border border-outline-gray-1 bg-surface-white p-3">
@@ -27,8 +28,8 @@
         </div>
 
         <div class="grid gap-4 lg:grid-cols-2">
-          <RecentList title="Recent Sales" slug="sales-invoice" :rows="data.recent_sales || []" />
-          <RecentList title="Recent Purchases" slug="purchase-invoice" :rows="data.recent_purchases || []" />
+          <RecentList title="Recent Sales" slug="sales-invoice" :rows="data.recent_sales || []" :icon="Receipt" color="green" />
+          <RecentList title="Recent Purchases" slug="purchase-invoice" :rows="data.recent_purchases || []" :icon="ShoppingBag" color="blue" />
         </div>
       </template>
     </template>
@@ -42,12 +43,33 @@
       </template>
       <template v-else-if="ana.data">
         <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          <Stat :label="tab === 1 ? 'Sales (12 mo)' : 'Purchases (12 mo)'" :value="fmtMoney(ana.data.total_12m, ana.data.currency)" />
-          <Stat :label="tab === 1 ? 'Invoices' : 'Bills'" :value="fmtNum(ana.data.count_12m)" />
-          <Stat label="Average value" :value="fmtMoney(ana.data.avg_value, ana.data.currency)" />
-          <Stat label="Largest" :value="fmtMoney(ana.data.largest, ana.data.currency)" />
-          <Stat :label="tab === 1 ? 'Customers' : 'Suppliers'" :value="fmtNum(ana.data.unique_parties)" />
-          <Stat :label="tab === 1 ? 'Top customer' : 'Top supplier'" :value="ana.data.top_parties?.[0]?.label || '—'" small />
+          <StatCard
+            :label="tab === 1 ? 'Sales (12 mo)' : 'Purchases (12 mo)'"
+            :value="fmtMoney(ana.data.total_12m, ana.data.currency)"
+            :icon="TrendingUp"
+            :color="tab === 1 ? 'green' : 'blue'"
+          />
+          <StatCard
+            :label="tab === 1 ? 'Invoices' : 'Bills'"
+            :value="fmtNum(ana.data.count_12m)"
+            :icon="Receipt"
+            :color="tab === 1 ? 'green' : 'blue'"
+          />
+          <StatCard label="Average value" :value="fmtMoney(ana.data.avg_value, ana.data.currency)" :icon="Scale" color="violet" />
+          <StatCard label="Largest" :value="fmtMoney(ana.data.largest, ana.data.currency)" :icon="Crown" color="amber" />
+          <StatCard
+            :label="tab === 1 ? 'Customers' : 'Suppliers'"
+            :value="fmtNum(ana.data.unique_parties)"
+            :icon="Users"
+            color="blue"
+          />
+          <StatCard
+            :label="tab === 1 ? 'Top customer' : 'Top supplier'"
+            :value="ana.data.top_parties?.[0]?.label || '—'"
+            :icon="Award"
+            color="orange"
+            small
+          />
         </div>
 
         <div class="h-72 rounded-xl border border-outline-gray-1 bg-surface-white p-3">
@@ -60,6 +82,8 @@
           </div>
           <RankList
             :title="tab === 1 ? 'Top Customers' : 'Top Suppliers'"
+            :icon="Users"
+            :color="tab === 1 ? 'green' : 'blue'"
             :rows="ana.data.top_parties || []"
             :currency="ana.data.currency"
             :bar-class="tab === 1 ? 'bg-green-500' : 'bg-blue-500'"
@@ -68,6 +92,8 @@
         </div>
         <RankList
           title="Top Items"
+          :icon="Package"
+          color="violet"
           :rows="ana.data.top_items || []"
           :currency="ana.data.currency"
           :bar-class="tab === 1 ? 'bg-emerald-500' : 'bg-indigo-500'"
@@ -83,8 +109,8 @@
       </template>
       <template v-else-if="arap.data">
         <div class="grid grid-cols-2 gap-3">
-          <Stat label="Total receivable" :value="fmtMoney(arap.data.receivable.total, arap.data.currency)" />
-          <Stat label="Total payable" :value="fmtMoney(arap.data.payable.total, arap.data.currency)" />
+          <StatCard label="Total receivable" :value="fmtMoney(arap.data.receivable.total, arap.data.currency)" :icon="ArrowDownLeft" color="amber" />
+          <StatCard label="Total payable" :value="fmtMoney(arap.data.payable.total, arap.data.currency)" :icon="ArrowUpRight" color="red" />
         </div>
         <div class="grid gap-4 lg:grid-cols-2">
           <div class="h-72 rounded-xl border border-outline-gray-1 bg-surface-white p-3">
@@ -95,10 +121,10 @@
           </div>
         </div>
         <div class="grid gap-4 lg:grid-cols-2">
-          <RankList title="Receivables ageing" :rows="arap.data.receivable.buckets" :currency="arap.data.currency" bar-class="bg-amber-500" />
-          <RankList title="Payables ageing" :rows="arap.data.payable.buckets" :currency="arap.data.currency" bar-class="bg-red-500" />
-          <RankList title="Top outstanding customers" :rows="arap.data.receivable.top" :currency="arap.data.currency" bar-class="bg-amber-500" party-type="Customer" />
-          <RankList title="Top outstanding suppliers" :rows="arap.data.payable.top" :currency="arap.data.currency" bar-class="bg-red-500" party-type="Supplier" />
+          <RankList title="Receivables ageing" :icon="ArrowDownLeft" color="amber" :rows="arap.data.receivable.buckets" :currency="arap.data.currency" bar-class="bg-amber-500" />
+          <RankList title="Payables ageing" :icon="ArrowUpRight" color="red" :rows="arap.data.payable.buckets" :currency="arap.data.currency" bar-class="bg-red-500" />
+          <RankList title="Top outstanding customers" :icon="Users" color="amber" :rows="arap.data.receivable.top" :currency="arap.data.currency" bar-class="bg-amber-500" party-type="Customer" />
+          <RankList title="Top outstanding suppliers" :icon="Users" color="red" :rows="arap.data.payable.top" :currency="arap.data.currency" bar-class="bg-red-500" party-type="Supplier" />
         </div>
       </template>
     </template>
@@ -111,11 +137,11 @@
       </template>
       <template v-else-if="inventory.data">
         <div class="grid grid-cols-2 gap-3 sm:grid-cols-5">
-          <Stat label="Stock value" :value="fmtMoney(inventory.data.total_value, inventory.data.currency)" />
-          <Stat label="Active SKUs" :value="fmtNum(inventory.data.active_skus)" />
-          <Stat label="Items in stock" :value="fmtNum(inventory.data.stocked_skus)" />
-          <Stat label="Out of stock" :value="fmtNum(inventory.data.out_of_stock)" />
-          <Stat label="Low stock" :value="fmtNum(inventory.data.low_stock)" />
+          <StatCard label="Stock value" :value="fmtMoney(inventory.data.total_value, inventory.data.currency)" :icon="Wallet" color="violet" />
+          <StatCard label="Active SKUs" :value="fmtNum(inventory.data.active_skus)" :icon="Package" color="blue" />
+          <StatCard label="Items in stock" :value="fmtNum(inventory.data.stocked_skus)" :icon="PackageCheck" color="green" />
+          <StatCard label="Out of stock" :value="fmtNum(inventory.data.out_of_stock)" :icon="PackageX" color="red" />
+          <StatCard label="Low stock" :value="fmtNum(inventory.data.low_stock)" :icon="TriangleAlert" color="amber" />
         </div>
         <div class="grid gap-4 lg:grid-cols-2">
           <div class="h-72 rounded-xl border border-outline-gray-1 bg-surface-white p-3">
@@ -123,6 +149,8 @@
           </div>
           <RankList
             title="Top items by stock value"
+            :icon="Package"
+            color="violet"
             :rows="inventory.data.top_items || []"
             :currency="inventory.data.currency"
             bar-class="bg-violet-500"
@@ -130,6 +158,8 @@
         </div>
         <RankList
           title="Stock value by item group"
+          :icon="Layers"
+          color="blue"
           :rows="inventory.data.by_group || []"
           :currency="inventory.data.currency"
           bar-class="bg-blue-500"
@@ -140,7 +170,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch, h } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { AxisChart, DonutChart, Tabs, createResource, call } from 'frappe-ui'
 import DollarSign from '~icons/lucide/dollar-sign'
 import ShoppingCart from '~icons/lucide/shopping-cart'
@@ -153,8 +183,17 @@ import Receipt from '~icons/lucide/receipt'
 import LayoutDashboard from '~icons/lucide/layout-dashboard'
 import Wallet from '~icons/lucide/wallet'
 import Package from '~icons/lucide/package'
+import PackageCheck from '~icons/lucide/package-check'
+import PackageX from '~icons/lucide/package-x'
+import TriangleAlert from '~icons/lucide/triangle-alert'
+import Scale from '~icons/lucide/scale'
+import Crown from '~icons/lucide/crown'
+import Award from '~icons/lucide/award'
+import Users from '~icons/lucide/users'
+import Layers from '~icons/lucide/layers'
 import RecentList from '@/components/RecentList.vue'
 import RankList from '@/components/RankList.vue'
+import StatCard from '@/components/StatCard.vue'
 import Skeleton from '@/components/Skeleton.vue'
 
 const tab = ref(0)
@@ -165,18 +204,6 @@ const tabs = [
   { label: 'Receivables & Payables', icon: Wallet },
   { label: 'Inventory', icon: Package },
 ]
-
-// Small inline stat card
-const Stat = (props) =>
-  h('div', { class: 'rounded-xl border border-outline-gray-1 bg-surface-white p-4' }, [
-    h('div', { class: 'truncate text-xs text-ink-gray-5' }, props.label),
-    h(
-      'div',
-      { class: ['mt-1.5 truncate font-semibold text-ink-gray-9', props.small ? 'text-base' : 'text-xl'] },
-      props.value,
-    ),
-  ])
-Stat.props = ['label', 'value', 'small']
 
 // ---- Overview data
 const hub = createResource({ url: 'kamil.api.get_hub_data', auto: true })
@@ -213,15 +240,7 @@ watch(
   { immediate: true },
 )
 
-const CHIP = {
-  green: 'bg-green-100 text-green-600',
-  blue: 'bg-blue-100 text-blue-600',
-  amber: 'bg-amber-100 text-amber-600',
-  red: 'bg-red-100 text-red-600',
-  violet: 'bg-violet-100 text-violet-600',
-  orange: 'bg-orange-100 text-orange-600',
-}
-
+// Card styling (the chip palette) now lives in StatCard, so every card matches.
 const kpis = [
   { key: 'today_sales', label: 'Sales today', money: true, color: 'green', icon: DollarSign },
   { key: 'mtd_sales', label: 'Sales this month', money: true, color: 'green', icon: ShoppingCart },

@@ -15,7 +15,7 @@
           class="flex items-center gap-3 rounded-xl border border-outline-gray-1 bg-surface-white p-4 text-left transition-colors hover:border-outline-gray-3 active:bg-surface-gray-2"
           @click="open(r)"
         >
-          <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-surface-gray-2 text-ink-gray-7">
+          <span class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg" :class="chip(group.section)">
             <component :is="r.icon" class="h-5 w-5" />
           </span>
           <span class="min-w-0">
@@ -45,6 +45,19 @@ const groups = computed(() =>
     reports: visibleReports.value.filter((r) => r.section === section),
   })).filter((g) => g.reports.length),
 )
+
+// Same chip palette as the dashboard cards, one colour per section so a report is
+// recognisable by its icon block alone.
+const SECTION_CHIP = {
+  'Financial Statements': 'bg-violet-100 text-violet-600',
+  'Receivables & Payables': 'bg-amber-100 text-amber-600',
+  Ledgers: 'bg-blue-100 text-blue-600',
+  'Sales & Purchases': 'bg-green-100 text-green-600',
+  Stock: 'bg-orange-100 text-orange-600',
+}
+function chip(section) {
+  return SECTION_CHIP[section] || 'bg-surface-gray-3 text-ink-gray-7'
+}
 
 function open(r) {
   haptic()

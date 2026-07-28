@@ -75,8 +75,10 @@
           <ComboField
             label="Mode of Payment"
             :options="modeOptions"
+            create-doctype="Mode of Payment"
             :modelValue="mode"
             @update:modelValue="(v) => (mode = v || '')"
+            @created="loadModes"
           />
           <p class="text-xs text-ink-gray-5">
             Approving creates the payment entry and allocates it against
@@ -148,6 +150,14 @@ const actionable = computed(
     !['Paid', 'Payment Ordered', 'Cancelled'].includes(pr.value.status),
 )
 
+async function loadModes() {
+  try {
+    modeOptions.value = (await call('kamil.api.list_modes_of_payment')) || []
+  } catch (e) {
+    modeOptions.value = []
+  }
+}
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -155,11 +165,7 @@ async function load() {
   try {
     pr.value = await call('kamil.payment_flow.get_payment_request', { name: route.params.name })
     mode.value = pr.value?.mode_of_payment || ''
-    try {
-      modeOptions.value = (await call('kamil.api.list_modes_of_payment')) || []
-    } catch (e) {
-      modeOptions.value = []
-    }
+    await loadModes()
   } catch (e) {
     error.value = e?.messages?.join(', ') || e?.message || 'Could not load this payment request.'
     pr.value = null

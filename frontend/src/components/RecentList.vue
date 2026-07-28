@@ -1,6 +1,15 @@
 <template>
   <div class="flex flex-col gap-2">
-    <h2 class="text-sm font-semibold text-ink-gray-8">{{ title }}</h2>
+    <div class="flex items-center gap-2">
+      <span
+        v-if="icon"
+        class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg"
+        :class="color === 'green' ? 'bg-green-100 text-green-600' : 'bg-blue-100 text-blue-600'"
+      >
+        <component :is="icon" class="h-4 w-4" />
+      </span>
+      <h2 class="truncate text-sm font-semibold text-ink-gray-8">{{ title }}</h2>
+    </div>
 
     <!-- Mobile: stacked cards (no horizontal scrolling) -->
     <div v-if="isMobile" class="max-h-80 overflow-y-auto rounded-lg border border-outline-gray-1 bg-surface-white">
@@ -70,6 +79,9 @@ const props = defineProps({
   title: String,
   slug: String,
   rows: { type: Array, default: () => [] },
+  // Optional header icon, styled like the dashboard cards' chip.
+  icon: { type: [Object, Function], default: null },
+  color: { type: String, default: 'blue' },
 })
 
 const isMobile = useIsMobile()

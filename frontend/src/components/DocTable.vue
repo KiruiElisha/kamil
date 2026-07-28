@@ -8,18 +8,15 @@
     </div>
 
     <!-- Per-doctype KPI strip -->
-    <div v-if="kpis.length" class="grid grid-cols-2 gap-2 sm:grid-cols-4">
-      <div
+    <div v-if="kpis.length" class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <StatCard
         v-for="k in kpis"
         :key="k.label"
-        class="rounded-lg border border-outline-gray-1 bg-surface-white px-3 py-2"
-      >
-        <div class="flex items-center gap-1.5">
-          <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="dotClass(k.color)" />
-          <span class="truncate text-xs text-ink-gray-5">{{ k.label }}</span>
-        </div>
-        <div class="mt-0.5 truncate text-base font-semibold text-ink-gray-9">{{ kpiValue(k) }}</div>
-      </div>
+        :label="k.label"
+        :value="kpiValue(k)"
+        :icon="k.icon"
+        :color="k.color"
+      />
     </div>
 
     <!-- Search + filters -->
@@ -152,8 +149,9 @@ import { useIsMobile } from '@/composables/useIsMobile'
 import { usePullToRefresh } from '@/composables/usePullToRefresh'
 import Skeleton from '@/components/Skeleton.vue'
 import ComboField from '@/components/ComboField.vue'
+import StatCard from '@/components/StatCard.vue'
 import { haptic } from '@/utils/haptics'
-import { statusTheme, docstatusBadge, kindTheme, dotClass } from '@/utils/status.js'
+import { statusTheme, docstatusBadge, kindTheme } from '@/utils/status.js'
 
 const props = defineProps({
   title: { type: String, required: true },
