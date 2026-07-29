@@ -40,6 +40,7 @@ const tableProps = computed(() => {
     title: c.title,
     doctype: c.doctype,
     columns: c.columns,
+    viewFields: c.view || null,
     orderBy: c.orderBy,
     currencyField: c.currencyField ?? 'currency',
     createConfig: c.create || null,

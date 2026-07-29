@@ -16,6 +16,7 @@ const routes = [
   { path: '/chart-of-accounts', name: 'ChartOfAccounts', component: () => import('@/pages/ChartOfAccounts.vue') },
   { path: '/users', name: 'Users', component: () => import('@/pages/Users.vue') },
   { path: '/settings/email', name: 'EmailSettings', component: () => import('@/pages/EmailSettings.vue') },
+  { path: '/settings/payments', name: 'AppSettings', component: () => import('@/pages/AppSettings.vue') },
 ]
 
 const router = createRouter({

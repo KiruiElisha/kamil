@@ -73,6 +73,7 @@ import MessageSquare from '~icons/lucide/message-square'
 import Landmark from '~icons/lucide/landmark'
 import UsersIcon from '~icons/lucide/users'
 import Mail from '~icons/lucide/mail'
+import Settings from '~icons/lucide/settings'
 import { SECTIONS, findList } from '@/data/doctypes.js'
 import { findReport } from '@/data/reports.js'
 import BarChart from '~icons/lucide/bar-chart-3'
@@ -228,6 +229,8 @@ const sections = computed(() => {
     setup.push({ label: 'Users', to: '/users', icon: UsersIcon, isActive: route.name === 'Users' })
   }
   setup.push({ label: 'My Email', to: '/settings/email', icon: Mail, isActive: route.name === 'EmailSettings' })
+  // Who payment approvals go to; readable by anyone, writable by a System Manager.
+  setup.push({ label: 'Settings', to: '/settings/payments', icon: Settings, isActive: route.name === 'AppSettings' })
 
   return [{ items }, ...groups, { label: 'Setup', collapsible: true, items: setup }]
 })
@@ -237,6 +240,7 @@ const PAGE_TITLES = {
   ChartOfAccounts: 'Chart of Accounts',
   Users: 'Users',
   EmailSettings: 'My Email',
+  AppSettings: 'Settings',
   PaymentApproval: 'Payment Approval',
 }
 

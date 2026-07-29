@@ -206,6 +206,20 @@ async function loadApprovers() {
   }
 }
 
+// One person receives payment requests (Settings -> Payment approvals), so the form
+// starts there rather than asking every time.
+async function loadApprover() {
+  try {
+    const s = await call('kamil.payment_flow.get_payment_settings')
+    if (s?.email && !form.recipient) form.recipient = s.email
+    if (s?.phone && !form.phone_number) form.phone_number = s.phone
+    if (s?.notify_by_email !== undefined) form.via_email = !!s.notify_by_email
+    if (s?.notify_by_whatsapp !== undefined) form.via_whatsapp = !!s.notify_by_whatsapp
+  } catch (e) {
+    /* the approver can still be typed in */
+  }
+}
+
 async function loadModes() {
   try {
     modeOptions.value = (await call('kamil.api.list_modes_of_payment')) || []
@@ -219,6 +233,7 @@ watch(show, (v) => {
   reset()
   loadPayables()
   loadModes()
+  loadApprover()
   loadApprovers()
 })
 

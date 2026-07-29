@@ -2,8 +2,15 @@
   <Dialog v-model="show" :options="{ title: config?.title || 'New', size: config?.child ? '3xl' : 'lg' }">
     <template #body-content>
       <div v-if="config" class="space-y-4">
-        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <template v-for="f in config.fields" :key="f.fieldname">
+        <div v-for="(group, gi) in groups" :key="group.title || gi" class="space-y-3">
+          <div
+            v-if="group.title"
+            class="border-b border-outline-gray-1 pb-1 text-xs font-semibold uppercase tracking-wide text-ink-gray-5"
+          >
+            {{ group.title }}
+          </div>
+          <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <template v-for="f in group.fields" :key="f.fieldname">
             <LinkField
               v-if="f.fieldtype === 'link'"
               :doctype="f.options"
@@ -46,12 +53,20 @@
               </div>
             </div>
             <FormControl
+              v-else-if="f.fieldtype === 'check'"
+              type="checkbox"
+              :label="f.label"
+              :modelValue="!!values[f.fieldname]"
+              @update:modelValue="(v) => (values[f.fieldname] = v ? 1 : 0)"
+            />
+            <FormControl
               v-else
               :type="fcType(f.fieldtype)"
               :label="f.label"
               v-model="values[f.fieldname]"
             />
           </template>
+          </div>
         </div>
 
         <ItemsTable
@@ -93,6 +108,40 @@ const values = reactive({})
 const partyValue = computed(() => values.customer || values.supplier || values.party_name || '')
 const error = ref('')
 const loading = ref(false)
+// Which of the declared fields this site actually has, and what the site calls them.
+const fieldMeta = ref(null)
+
+// A field survives when the doctype really has it. Some of the fields the forms ask
+// for are site customisations (a verification status, the KYC attachments), and a
+// form that showed them on a site without them would collect values nothing reads.
+const visibleFields = computed(() => {
+  const declared = props.config?.fields || []
+  if (!fieldMeta.value) return declared
+  return declared
+    .filter((f) => f.virtual || (fieldMeta.value[f.fieldname] && !fieldMeta.value[f.fieldname].read_only))
+    .map((f) => {
+      if (f.virtual) return f
+      const meta = fieldMeta.value[f.fieldname]
+      return {
+        ...f,
+        label: f.label || meta.label,
+        // Select options come from the site, so a customised list stays correct.
+        selectOptions: f.selectOptions || meta.select_options,
+      }
+    })
+})
+
+// Fields are laid out in the order declared; `section` on a field starts a new group.
+const groups = computed(() => {
+  const out = []
+  for (const f of visibleFields.value) {
+    if (!out.length || (f.section && f.section !== out[out.length - 1].title)) {
+      out.push({ title: f.section || '', fields: [] })
+    }
+    out[out.length - 1].fields.push(f)
+  }
+  return out
+})
 
 function fcType(ft) {
   if (ft === 'float' || ft === 'currency') return 'number'
@@ -107,10 +156,26 @@ function today() {
 
 const SPECIAL = ['company', 'warehouse', 'selling_price_list', 'buying_price_list']
 
+async function loadFieldMeta() {
+  fieldMeta.value = null
+  const fields = props.config?.fields || []
+  if (!fields.length) return
+  try {
+    fieldMeta.value = await call('kamil.api.get_form_field_meta', {
+      doctype: props.config.doctype,
+      fieldnames: JSON.stringify(fields.filter((f) => !f.virtual).map((f) => f.fieldname)),
+    })
+  } catch (e) {
+    // Fall back to showing everything declared rather than an empty form.
+    fieldMeta.value = null
+  }
+}
+
 async function reset() {
   Object.keys(values).forEach((k) => delete values[k])
   error.value = ''
   if (!props.config) return
+  loadFieldMeta()
   const d = (await getDefaults()) || {}
   for (const f of props.config.fields || []) {
     if (f.default === 'today') values[f.fieldname] = today()
@@ -141,7 +206,12 @@ async function create() {
   error.value = ''
   loading.value = true
   try {
-    const out = await call('kamil.api.create_document', { doctype: props.config.doctype, values: JSON.stringify(clean()) })
+    // A doctype can name its own creator when one record is not the whole story —
+    // a customer also gets its contact and address.
+    const payload = props.config.method
+      ? { values: JSON.stringify(clean()) }
+      : { doctype: props.config.doctype, values: JSON.stringify(clean()) }
+    const out = await call(props.config.method || 'kamil.api.create_document', payload)
     emit('created', out)
     show.value = false
   } catch (e) {

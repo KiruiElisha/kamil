@@ -127,7 +127,7 @@
       v-model="showView"
       :doctype="doctype"
       :name="viewName"
-      :columns="columns"
+      :columns="viewFields || columns"
       :child="createConfig?.child || null"
       :currency-field="currencyField"
       @submitted="onCreated"
@@ -157,6 +157,9 @@ const props = defineProps({
   title: { type: String, required: true },
   doctype: { type: String, required: true },
   columns: { type: Array, required: true },
+  // What the viewer shows; falls back to the list columns when a doctype has no
+  // richer set declared.
+  viewFields: { type: Array, default: null },
   filters: { type: Object, default: () => ({}) },
   orderBy: { type: String, default: 'modified desc' },
   currencyField: { type: String, default: 'currency' },

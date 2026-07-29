@@ -507,3 +507,50 @@ def delete_my_email_account() -> dict:
 	doc.check_permission("delete")
 	doc.delete()
 	return {"deleted": True, "name": name}
+
+
+# ---------------------------------------------------------------------------
+# App settings
+# ---------------------------------------------------------------------------
+
+_SETTINGS_FIELDS = (
+	"payment_approver",
+	"payment_approver_email",
+	"payment_approver_phone",
+	"notify_by_email",
+	"notify_by_whatsapp",
+)
+
+
+@frappe.whitelist()
+def get_kamil_settings() -> dict:
+	"""App-wide settings, plus whether this user may change them."""
+	out = {"can_edit": bool(frappe.has_permission("Kamil Settings", "write"))}
+	if not frappe.db.exists("DocType", "Kamil Settings"):
+		return {**out, "exists": False}
+
+	doc = frappe.get_single("Kamil Settings")
+	for field in _SETTINGS_FIELDS:
+		out[field] = doc.get(field)
+	out["exists"] = True
+	return out
+
+
+@frappe.whitelist()
+def save_kamil_settings(values: str | dict) -> dict:
+	"""Update the app settings. Writing is gated by the doctype's own permissions."""
+	if not frappe.has_permission("Kamil Settings", "write"):
+		frappe.throw(_("You are not allowed to change these settings."), frappe.PermissionError)
+
+	values = frappe.parse_json(values) if isinstance(values, str) else (values or {})
+	if not isinstance(values, dict):
+		frappe.throw(_("Invalid settings."))
+
+	doc = frappe.get_single("Kamil Settings")
+	for field in _SETTINGS_FIELDS:
+		if field in values:
+			doc.set(field, values[field])
+	doc.save()
+	frappe.clear_cache(doctype="Kamil Settings")
+
+	return get_kamil_settings()

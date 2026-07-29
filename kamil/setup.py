@@ -224,69 +224,59 @@ CUSTOMER_TRANSITIONS = [
 ]
 
 
-def _ensure_workflow_masters() -> None:
+def _ensure_workflow_masters(states, transitions) -> None:
 	"""Workflow States and Actions are master records; create any that are missing."""
-	for state in CUSTOMER_STATES:
+	for state in states:
 		if not frappe.db.exists("Workflow State", state["state"]):
 			frappe.get_doc(
 				{"doctype": "Workflow State", "workflow_state_name": state["state"], "style": state.get("style") or ""}
 			).insert(ignore_permissions=True)
 
-	for transition in CUSTOMER_TRANSITIONS:
+	for transition in transitions:
 		if not frappe.db.exists("Workflow Action Master", transition["action"]):
 			frappe.get_doc(
 				{"doctype": "Workflow Action Master", "workflow_action_name": transition["action"]}
 			).insert(ignore_permissions=True)
 
 
-def create_customer_workflow() -> None:
-	"""Install the Customer approval workflow, leaving an existing one alone.
+def _install_workflow(name, doctype, states, transitions, state_field="workflow_state", override_status=0) -> None:
+	"""Install a workflow, leaving an existing one on the doctype alone.
 
-	We do not overwrite a workflow that is already there — sites often tune states and
-	roles by hand, and clobbering that on every migrate would be hostile.
+	Sites tune states and roles by hand; clobbering that on every migrate would be
+	hostile. A workflow is only installed when the doctype has none active.
 	"""
-	if not frappe.db.exists("DocType", "Customer"):
+	if not frappe.db.exists("DocType", doctype):
 		return
 
-	# Any active workflow on Customer wins; only install ours if there is none.
-	existing = frappe.db.get_value("Workflow", {"document_type": "Customer", "is_active": 1}, "name")
-	if existing:
+	if frappe.db.get_value("Workflow", {"document_type": doctype, "is_active": 1}, "name"):
 		return
 
-	# If our workflow is already on the site, leave its is_active flag exactly as the
-	# site set it. Re-enabling it here would undo a deliberate deactivation — and an
-	# active workflow locks Customer editing to the roles named in `allow_edit`, which
-	# is enough to stop an admin without those roles from creating a Customer at all.
-	if frappe.db.exists("Workflow", CUSTOMER_WORKFLOW):
-		return
+	_ensure_workflow_masters(states, transitions)
 
-	_ensure_workflow_masters()
+	if frappe.db.exists("Workflow", name):
+		frappe.db.set_value("Workflow", name, "is_active", 1)
+		return
 
 	missing_roles = [
 		role
-		for role in {s.get("allow_edit") for s in CUSTOMER_STATES} | {t["allowed"] for t in CUSTOMER_TRANSITIONS}
+		for role in {s.get("allow_edit") for s in states} | {t["allowed"] for t in transitions}
 		if role and not frappe.db.exists("Role", role)
 	]
 	if missing_roles:
-		frappe.log_error(
-			f"Skipped {CUSTOMER_WORKFLOW}: missing roles {', '.join(sorted(missing_roles))}",
-			"Kamil Setup",
-		)
+		frappe.log_error(f"Skipped {name}: missing roles {', '.join(sorted(missing_roles))}", "Kamil Setup")
 		return
 
-	workflow = frappe.get_doc(
+	frappe.get_doc(
 		{
 			"doctype": "Workflow",
-			"workflow_name": CUSTOMER_WORKFLOW,
-			"document_type": "Customer",
-			"workflow_state_field": "workflow_state",
+			"workflow_name": name,
+			"document_type": doctype,
+			"workflow_state_field": state_field,
 			"is_active": 1,
 			"send_email_alert": 0,
-			# Customer has its own `disabled` flag; don't let the workflow drive `status`.
-			"override_status": 0,
+			"override_status": override_status,
 			"states": [
-				{"state": s["state"], "doc_status": s["doc_status"], "allow_edit": s["allow_edit"]}
-				for s in CUSTOMER_STATES
+				{"state": s["state"], "doc_status": s["doc_status"], "allow_edit": s["allow_edit"]} for s in states
 			],
 			"transitions": [
 				{
@@ -294,13 +284,118 @@ def create_customer_workflow() -> None:
 					"action": t["action"],
 					"next_state": t["next_state"],
 					"allowed": t["allowed"],
-					"allow_self_approval": 0,
+					"allow_self_approval": t.get("allow_self_approval", 0),
 				}
-				for t in CUSTOMER_TRANSITIONS
+				for t in transitions
 			],
 		}
-	)
-	workflow.insert(ignore_permissions=True)
+	).insert(ignore_permissions=True)
+
+
+# ---------------------------------------------------------------------------
+# Purchase approval — two steps before an order is placed
+# ---------------------------------------------------------------------------
+#
+# Purchase Order is submittable, so the workflow drives docstatus as well as state:
+# an order is only submitted (docstatus 1) once the second approver signs it off, and
+# nothing can be ordered on one person's say-so.
+
+PURCHASE_WORKFLOW = "Kamil Purchase Approval"
+
+PURCHASE_STATES = [
+	{"state": "Draft", "doc_status": "0", "allow_edit": "Purchase User", "style": "Warning"},
+	{"state": "Pending Review", "doc_status": "0", "allow_edit": "Purchase Manager", "style": "Warning"},
+	{"state": "Pending Approval", "doc_status": "0", "allow_edit": "Accounts Manager", "style": "Warning"},
+	{"state": "Approved", "doc_status": "1", "allow_edit": "Accounts Manager", "style": "Success"},
+	{"state": "Rejected", "doc_status": "0", "allow_edit": "Purchase User", "style": "Danger"},
+]
+
+PURCHASE_TRANSITIONS = [
+	# Step 1 — the buyer sends it up, purchasing checks it
+	{"state": "Draft", "action": "Submit for Review", "next_state": "Pending Review", "allowed": "Purchase User"},
+	{"state": "Pending Review", "action": "Review", "next_state": "Pending Approval", "allowed": "Purchase Manager"},
+	{"state": "Pending Review", "action": "Reject", "next_state": "Rejected", "allowed": "Purchase Manager"},
+	# Step 2 — finance approves, which submits the order
+	{"state": "Pending Approval", "action": "Approve", "next_state": "Approved", "allowed": "Accounts Manager"},
+	{"state": "Pending Approval", "action": "Reject", "next_state": "Rejected", "allowed": "Accounts Manager"},
+	# Back to the buyer to fix and resend
+	{"state": "Rejected", "action": "Resubmit", "next_state": "Pending Review", "allowed": "Purchase User"},
+]
+
+
+def create_purchase_workflow() -> None:
+	"""Two-step approval on Purchase Orders: purchasing reviews, finance approves."""
+	_install_workflow(PURCHASE_WORKFLOW, "Purchase Order", PURCHASE_STATES, PURCHASE_TRANSITIONS)
+
+
+def create_customer_workflow() -> None:
+	"""Install the Customer approval workflow, leaving an existing one alone."""
+	# Customer has its own `disabled` flag; don't let the workflow drive `status`.
+	_install_workflow(CUSTOMER_WORKFLOW, "Customer", CUSTOMER_STATES, CUSTOMER_TRANSITIONS)
+
+
+# ---------------------------------------------------------------------------
+# Vehicle: trim ERPNext's fleet fields down to what a fuel haulier uses
+# ---------------------------------------------------------------------------
+#
+# Kamil's vehicles are tankers on hire, not a staff fleet: insurance is the
+# transporter's business, and nobody records door or wheel counts. Hiding the fields
+# is deliberate rather than deleting them — the data (if any was ever entered) stays,
+# and a site that wants them back only has to clear the property setter.
+
+VEHICLE_HIDDEN_FIELDS = (
+	# Fleet admin ERPNext assumes but Kamil does not keep on the vehicle record
+	"insurance_details",  # section holding the four insurance fields below
+	"insurance_company",
+	"policy_no",
+	"start_date",
+	"end_date",
+	"carbon_check_date",
+	"wheels",
+	"doors",
+	# Not tracked per vehicle here — fuel and mileage live on the transport documents
+	"fuel_type",
+	"uom",
+	"last_odometer",
+	"acquisition_date",
+	"vehicle_value",
+	"chassis_no",
+	"location",
+)
+
+# Anything this app has hidden in the past but no longer wants hidden. Property
+# setters persist, so a field dropped from the list above has to be un-hidden
+# explicitly or it would stay invisible forever.
+VEHICLE_RESTORED_FIELDS = ("employee",)
+
+
+def hide_vehicle_fields() -> None:
+	"""Hide the Vehicle fields the app has no use for, and restore any it used to
+	hide. Idempotent, so it can run on every migrate."""
+	if not frappe.db.exists("DocType", "Vehicle"):
+		return
+
+	from frappe.custom.doctype.property_setter.property_setter import make_property_setter
+
+	meta = frappe.get_meta("Vehicle")
+	for fieldname in VEHICLE_HIDDEN_FIELDS:
+		df = meta.get_field(fieldname)
+		if not df:
+			continue
+		make_property_setter("Vehicle", fieldname, "hidden", 1, "Check", validate_fields_for_doctype=False)
+		# A hidden field that is still mandatory would block every save.
+		if df.reqd:
+			make_property_setter(
+				"Vehicle", fieldname, "reqd", 0, "Check", validate_fields_for_doctype=False
+			)
+
+	for fieldname in VEHICLE_RESTORED_FIELDS:
+		frappe.db.delete(
+			"Property Setter",
+			{"doc_type": "Vehicle", "field_name": fieldname, "property": ("in", ("hidden", "reqd"))},
+		)
+
+	frappe.clear_cache(doctype="Vehicle")
 
 
 # ---------------------------------------------------------------------------
@@ -378,5 +473,7 @@ def setup_kamil() -> None:
 	"""Idempotent: safe to run on every migrate."""
 	create_custom_fields()
 	create_customer_workflow()
+	create_purchase_workflow()
+	hide_vehicle_fields()
 	create_workspace()
 	frappe.db.commit()

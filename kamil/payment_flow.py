@@ -16,7 +16,7 @@ account and credits the payable, the payment entry then settles the payable.
 
 import frappe
 from frappe import _
-from frappe.utils import flt, get_url, nowdate
+from frappe.utils import cint, flt, get_url, nowdate
 
 APPROVE_ROLES = ("Accounts Manager", "Accounts User", "System Manager")
 
@@ -62,6 +62,38 @@ def _mode_of_payment_account(mode_of_payment: str | None, company: str | None) -
 		{"parent": mode_of_payment, "company": company},
 		"default_account",
 	)
+
+
+def payment_settings() -> frappe._dict:
+	"""Where payment approvals go, from Kamil Settings.
+
+	One person handles approvals, so the app should not ask for their address on
+	every request — the caller may still override it per request.
+	"""
+	try:
+		settings = frappe.get_cached_doc("Kamil Settings")
+	except Exception:
+		return frappe._dict()
+
+	email = (settings.payment_approver_email or "").strip()
+	if not email and settings.payment_approver:
+		email = frappe.db.get_value("User", settings.payment_approver, "email") or ""
+
+	return frappe._dict(
+		{
+			"approver": settings.payment_approver,
+			"email": email,
+			"phone": (settings.payment_approver_phone or "").strip(),
+			"notify_by_email": cint(settings.notify_by_email),
+			"notify_by_whatsapp": cint(settings.notify_by_whatsapp),
+		}
+	)
+
+
+@frappe.whitelist()
+def get_payment_settings() -> dict:
+	"""The approval defaults, for the request form and the settings screen."""
+	return dict(payment_settings())
 
 
 def approval_url(name: str) -> str:
@@ -130,12 +162,21 @@ def create_payment_request(
 		pr.bank_account = bank_account
 	if cost_center:
 		pr.cost_center = cost_center
-	if phone_number:
-		pr.phone_number = phone_number
+	defaults = payment_settings()
+	if not recipient and defaults.email:
+		pr.email_to = defaults.email
+	if phone_number or defaults.phone:
+		pr.phone_number = phone_number or defaults.phone
 	if subject:
 		pr.subject = subject
-	if message:
-		pr.message = message
+
+	# make_payment_request fills `message` with ERPNext's payment-gateway template — a
+	# raw Jinja block with a "Make Payment" gateway link. The app mutes that email and
+	# sends its own approval mail, so the template is never rendered and would only
+	# show up as markup on the approval screen. Replace it with a plain sentence.
+	pr.message = message or _("Payment of {0} requested against {1} {2}.").format(
+		frappe.utils.fmt_money(amount, currency=pr.currency or None), _(reference_doctype), reference_name
+	)
 
 	pr.mute_email = 1  # we do our own sending, so ERPNext must not also email on submit
 	pr.flags.ignore_permissions = True
@@ -231,6 +272,43 @@ def create_expense_payment_request(
 	request["purchase_invoice"] = invoice.name
 	request["expense_account"] = expense_account
 	return request
+
+
+def clear_gateway_messages() -> dict:
+	"""Strip ERPNext's payment-gateway template from existing Payment Requests.
+
+	Requests raised before this was fixed carry the raw Jinja block, which the app
+	shows verbatim on the approval screen. The message is presentational — the app
+	sends its own mail — so replacing it changes nothing about the payment itself.
+	Safe to re-run: only rows still holding the template are touched.
+	"""
+	# Two templates land here: ERPNext's own dummy message (raw Jinja with a "Make
+	# Payment" gateway link) and whatever a Payment Gateway Account carries. Both point
+	# at a gateway this app does not use.
+	rows = frappe.get_all(
+		"Payment Request",
+		or_filters=[
+			["message", "like", "%Requesting payment against%"],
+			["message", "like", "%Make Payment%"],
+			["message", "like", "%click on the link below%"],
+		],
+		fields=["name", "reference_doctype", "reference_name", "grand_total", "currency"],
+		limit_page_length=0,
+	)
+	for row in rows:
+		frappe.db.set_value(
+			"Payment Request",
+			row.name,
+			"message",
+			_("Payment of {0} requested against {1} {2}.").format(
+				frappe.utils.fmt_money(flt(row.grand_total), currency=row.currency or None),
+				_(row.reference_doctype or ""),
+				row.reference_name or "",
+			),
+			update_modified=False,
+		)
+	frappe.db.commit()
+	return {"cleared": len(rows)}
 
 
 # ---------------------------------------------------------------------------
@@ -442,6 +520,10 @@ def send_payment_request(
 	if not pr.has_permission("read"):
 		frappe.throw(_("Not permitted."), frappe.PermissionError)
 
+	defaults = payment_settings()
+	recipient = (recipient or "").strip() or defaults.email or None
+	phone_number = (phone_number or "").strip() or defaults.phone or None
+
 	link = approval_url(name)
 	results = {"name": name, "link": link, "email": None, "whatsapp": None}
 
@@ -541,6 +623,10 @@ def send_internal_transfer(
 	entry.check_permission("read")
 	if entry.payment_type != "Internal Transfer":
 		frappe.throw(_("{0} is not an internal transfer.").format(name))
+
+	defaults = payment_settings()
+	recipient = (recipient or "").strip() or defaults.email or None
+	phone_number = (phone_number or "").strip() or defaults.phone or None
 
 	link = transfer_approval_url(name)
 	results = {"name": name, "link": link, "email": None, "whatsapp": None}

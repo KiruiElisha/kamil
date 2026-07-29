@@ -1,0 +1,85 @@
+{
+ "actions": [],
+ "creation": "2026-07-29 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "payments_section",
+  "payment_approver",
+  "payment_approver_email",
+  "payments_column",
+  "payment_approver_phone",
+  "notify_by_email",
+  "notify_by_whatsapp"
+ ],
+ "fields": [
+  {
+   "fieldname": "payments_section",
+   "fieldtype": "Section Break",
+   "label": "Payment Approvals"
+  },
+  {
+   "description": "Every payment request raised in the app is sent to this person.",
+   "fieldname": "payment_approver",
+   "fieldtype": "Link",
+   "label": "Payment Approver",
+   "options": "User"
+  },
+  {
+   "description": "Leave blank to use the approver's own account email.",
+   "fieldname": "payment_approver_email",
+   "fieldtype": "Data",
+   "label": "Approver Email",
+   "options": "Email"
+  },
+  {
+   "fieldname": "payments_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "payment_approver_phone",
+   "fieldtype": "Data",
+   "label": "Approver WhatsApp"
+  },
+  {
+   "default": "1",
+   "fieldname": "notify_by_email",
+   "fieldtype": "Check",
+   "label": "Send approval requests by email"
+  },
+  {
+   "default": "0",
+   "fieldname": "notify_by_whatsapp",
+   "fieldtype": "Check",
+   "label": "Send approval requests by WhatsApp"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-07-29 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Kamil",
+ "name": "Kamil Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "Accounts Manager"
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

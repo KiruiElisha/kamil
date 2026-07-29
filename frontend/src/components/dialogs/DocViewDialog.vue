@@ -66,7 +66,7 @@
 
         <!-- Summary -->
         <div v-else class="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3">
-          <div v-for="c in curColumns" :key="c.field">
+          <div v-for="c in filledColumns" :key="c.field">
             <div class="text-xs text-ink-gray-5">{{ c.label }}</div>
             <div class="mt-0.5 text-sm">
               <Badge v-if="c.type === 'status'" :theme="statusTheme(doc[c.field])" :label="doc[c.field] || 'Draft'" />
@@ -156,6 +156,39 @@
           </div>
         </div>
 
+        <!-- Raise a payment request against this document -->
+        <div v-if="prOpen" class="space-y-3 rounded-lg border border-outline-gray-1 bg-surface-gray-1 p-3">
+          <div class="flex flex-wrap items-center gap-2 text-sm font-semibold text-ink-gray-8">
+            <Send class="h-4 w-4 text-ink-gray-6" /> Request payment
+            <Badge v-if="prOutstanding" theme="orange" :label="`Outstanding ${money(prOutstanding, doc[curCurrency])}`" />
+          </div>
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <FormControl type="number" label="Amount to request" v-model="prForm.amount" />
+            <ComboField
+              label="Mode of Payment"
+              :options="modeOptions"
+              create-doctype="Mode of Payment"
+              :modelValue="prForm.mode_of_payment"
+              @update:modelValue="(v) => (prForm.mode_of_payment = v || '')"
+              @created="loadModes"
+            />
+            <FormControl type="text" label="Approver email" placeholder="approver@company.com" v-model="prForm.recipient" />
+            <FormControl type="text" label="Approver WhatsApp (optional)" placeholder="+2547…" v-model="prForm.phone_number" />
+          </div>
+          <div class="flex flex-wrap items-center gap-4">
+            <FormControl type="checkbox" label="Send email" v-model="prForm.via_email" />
+            <FormControl type="checkbox" label="Send WhatsApp" v-model="prForm.via_whatsapp" />
+          </div>
+          <div v-if="prResult" class="space-y-1 rounded-lg border p-2 text-sm" :class="prResult.ok ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'">
+            <div :class="prResult.ok ? 'font-medium text-green-700' : 'font-medium text-red-700'">{{ prResult.title }}</div>
+            <div v-for="line in prResult.lines" :key="line" class="break-all text-ink-gray-7">{{ line }}</div>
+          </div>
+          <div class="flex flex-wrap justify-end gap-2">
+            <Button label="Close" @click="prOpen = false" />
+            <Button variant="solid" label="Raise request" :loading="prSaving" @click="raisePaymentRequest" />
+          </div>
+        </div>
+
         <!-- Print panel -->
         <div v-if="printOpen" class="space-y-3 rounded-lg border border-outline-gray-1 bg-surface-gray-1 p-3">
           <div class="flex items-center gap-2 text-sm font-semibold text-ink-gray-8">
@@ -209,6 +242,9 @@
           <Button v-if="canCancel" theme="red" label="Cancel doc" @click="cancelOpen = !cancelOpen">
             <template #prefix><Ban class="h-4 w-4" /></template>
           </Button>
+          <Button v-if="canRequestPayment" label="Request payment" @click="togglePaymentRequest">
+            <template #prefix><Send class="h-4 w-4 text-ink-gray-6" /></template>
+          </Button>
           <Button v-if="isPaymentRequest" variant="solid" label="Review & approve" @click="openApproval">
             <template #prefix><CheckCircle class="h-4 w-4" /></template>
           </Button>
@@ -254,12 +290,13 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, reactive, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { Dialog, Button, Badge, ErrorMessage, FormControl, Dropdown, Spinner, FileUploader, call } from 'frappe-ui'
 import ExternalLink from '~icons/lucide/external-link'
 import MessageCircle from '~icons/lucide/message-circle'
 import Printer from '~icons/lucide/printer'
+import Send from '~icons/lucide/send'
 import BookOpen from '~icons/lucide/book-open'
 import Plus from '~icons/lucide/plus'
 import Ban from '~icons/lucide/ban'
@@ -317,6 +354,21 @@ const cancelling = ref(false)
 const cancelReasonInput = ref('')
 const cancelReason = ref({})
 
+// Raising a payment request straight off an invoice or order — the same flow the
+// Payment Requests list offers, without having to go and find the document again.
+const prOpen = ref(false)
+const prSaving = ref(false)
+const prResult = ref(null)
+const prForm = reactive({
+  amount: null,
+  mode_of_payment: '',
+  recipient: '',
+  phone_number: '',
+  via_email: true,
+  via_whatsapp: false,
+})
+const modeOptions = ref([])
+
 const waOpen = ref(false)
 const waPhone = ref('')
 const waMessage = ref('')
@@ -338,6 +390,21 @@ const isCancelled = computed(() => doc.value && doc.value.docstatus === 2)
 const canSubmit = computed(() => !!doc.value && !actions.value.workflow && actions.value.can_submit)
 const workflowActions = computed(() => (actions.value.workflow ? actions.value.transitions || [] : []))
 const isPaymentRequest = computed(() => curDoctype.value === 'Payment Request')
+
+// A payment can be requested against a submitted invoice or order. Requests are
+// raised against the document, so drafts and cancelled documents are out.
+const PAYABLE_DOCTYPES = ['Sales Invoice', 'Purchase Invoice', 'Sales Order', 'Purchase Order']
+const canRequestPayment = computed(
+  () => !!doc.value && doc.value.docstatus === 1 && PAYABLE_DOCTYPES.includes(curDoctype.value),
+)
+const prOutstanding = computed(() => {
+  const d = doc.value
+  if (!d) return 0
+  const outstanding = Number(d.outstanding_amount)
+  if (Number.isFinite(outstanding) && outstanding > 0) return outstanding
+  // Orders track what has been paid rather than what is left.
+  return Math.max(Number(d.grand_total || 0) - Number(d.advance_paid || 0), 0)
+})
 
 const slugFor = (doctype) => (doctype || '').toLowerCase().replace(/ /g, '-')
 
@@ -388,9 +455,24 @@ async function saveEdit() {
     saving.value = false
   }
 }
+// Which fields actually have a value. `name` always shows, so an empty record still
+// identifies itself.
+const filledColumns = computed(() => {
+  const d = doc.value || {}
+  return curColumns.value.filter((c) => {
+    if (c.field === 'name') return true
+    const v = d[c.field]
+    return v !== null && v !== undefined && v !== '' && v !== 0
+  })
+})
+
 const partyLink = computed(() => {
   const d = doc.value
   if (!d) return null
+  // A customer or supplier record is itself the party — its ledger is one click away.
+  if (['Customer', 'Supplier'].includes(curDoctype.value)) {
+    return { party_type: curDoctype.value, party: d.name }
+  }
   if (d.customer) return { party_type: 'Customer', party: d.customer }
   if (d.supplier) return { party_type: 'Supplier', party: d.supplier }
   if (d.party_type && d.party) return { party_type: d.party_type, party: d.party }
@@ -406,6 +488,8 @@ function resetPanels() {
   error.value = ''
   actions.value = { ...EMPTY_ACTIONS }
   printOpen.value = false
+  prOpen.value = false
+  prResult.value = null
   cancelOpen.value = false
   cancelReasonInput.value = ''
   cancelReason.value = {}
@@ -502,6 +586,68 @@ async function makeNext(target) {
     await load() // show the newly created draft in place
   } catch (e) {
     error.value = e?.messages?.join(', ') || e?.message || 'Could not create the document.'
+  }
+}
+
+async function loadModes() {
+  try {
+    modeOptions.value = (await call('kamil.api.list_modes_of_payment')) || []
+  } catch (e) {
+    modeOptions.value = []
+  }
+}
+
+function togglePaymentRequest() {
+  prOpen.value = !prOpen.value
+  if (!prOpen.value) return
+  prResult.value = ''
+  prForm.amount = prOutstanding.value || null
+  prForm.mode_of_payment = ''
+  if (!modeOptions.value.length) loadModes()
+}
+
+async function raisePaymentRequest() {
+  prSaving.value = true
+  prResult.value = null
+  try {
+    const created = await call('kamil.payment_flow.create_payment_request', {
+      reference_doctype: curDoctype.value,
+      reference_name: curName.value,
+      amount: prForm.amount || null,
+      mode_of_payment: prForm.mode_of_payment || null,
+      recipient: prForm.recipient || null,
+      phone_number: prForm.phone_number || null,
+    })
+
+    // Sending is separate so a mail failure never loses the request itself.
+    let sent = null
+    if (prForm.via_email || prForm.via_whatsapp) {
+      sent = await call('kamil.payment_flow.send_payment_request', {
+        name: created.name,
+        via_email: prForm.via_email ? 1 : 0,
+        via_whatsapp: prForm.via_whatsapp ? 1 : 0,
+        recipient: prForm.recipient || null,
+        phone_number: prForm.phone_number || null,
+      })
+    }
+
+    const lines = []
+    if (sent?.link) lines.push(`Approval link: ${sent.link}`)
+    if (sent?.email) lines.push(sent.email.sent ? `Emailed to ${sent.email.to}` : `Email not sent — ${sent.email.error}`)
+    if (sent?.whatsapp)
+      lines.push(sent.whatsapp.sent ? `WhatsApp sent to ${sent.whatsapp.to}` : `WhatsApp not sent — ${sent.whatsapp.error}`)
+    if (!lines.length) lines.push('Not sent — share it from the Payment Requests list when you are ready.')
+
+    prResult.value = { ok: true, title: `${created.name} raised and awaiting approval.`, lines }
+    emit('submitted') // the list behind this dialog now has one more request
+  } catch (e) {
+    prResult.value = {
+      ok: false,
+      title: 'Could not raise the payment request.',
+      lines: [e?.messages?.join(', ') || e?.message || 'Unknown error.'],
+    }
+  } finally {
+    prSaving.value = false
   }
 }
 

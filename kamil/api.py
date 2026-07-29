@@ -653,6 +653,50 @@ def get_quick_entry(doctype: str) -> dict:
 
 
 @frappe.whitelist()
+def get_form_field_meta(doctype: str, fieldnames: str | list | None = None) -> dict:
+	"""Metadata for the fields a create/edit form wants to show.
+
+	The forms are declared in the frontend, but some of the fields they ask for are
+	site customisations that may not exist everywhere. This reports which ones are
+	really on the doctype — the form drops the rest — and hands back each Select's
+	options from the site itself, so a customised status list stays correct.
+	"""
+	out = {}
+	if not doctype or not frappe.db.exists("DocType", doctype):
+		return out
+
+	if isinstance(fieldnames, str):
+		try:
+			fieldnames = frappe.parse_json(fieldnames)
+		except Exception:
+			fieldnames = [f.strip() for f in fieldnames.split(",") if f.strip()]
+	if not isinstance(fieldnames, list):
+		return out
+
+	meta = frappe.get_meta(doctype)
+	for fieldname in fieldnames:
+		if not isinstance(fieldname, str):
+			continue
+		df = meta.get_field(fieldname)
+		if not df or df.hidden:
+			continue
+		out[fieldname] = {
+			"label": _(df.label or fieldname),
+			"fieldtype": df.fieldtype,
+			"options": df.options or "",
+			"reqd": cint(df.reqd),
+			"read_only": cint(df.read_only),
+			"description": df.description or "",
+			"select_options": [
+				{"label": o.strip() or "—", "value": o.strip()}
+				for o in (df.options or "").split("\n")
+				if df.fieldtype == "Select"
+			],
+		}
+	return out
+
+
+@frappe.whitelist()
 def create_document(doctype: str, values: str | dict | None = None):
 	"""Insert a draft document (incl. child tables) from the create modal."""
 	values = frappe.parse_json(values) if isinstance(values, str) else (values or {})
@@ -700,6 +744,115 @@ def update_document(doctype: str, name: str, values: str | dict | None = None) -
 	doc.save()
 
 	return {"name": doc.name, "doctype": doc.doctype}
+
+
+# Contact and address details do not live on Customer — ERPNext keeps them in their
+# own doctypes and links back. The create form still asks for them in one place, so
+# these arrive prefixed and are split back out here.
+_CONTACT_FIELDS = ("contact_first_name", "contact_last_name", "contact_mobile", "contact_email")
+_ADDRESS_FIELDS = ("address_line1", "address_line2", "address_city", "address_country")
+
+
+def _create_party_contact(party_type: str, party: str, values: dict) -> str | None:
+	"""Contact for a new customer or supplier, linked back and set as its primary."""
+	first = (values.get("contact_first_name") or "").strip()
+	last = (values.get("contact_last_name") or "").strip()
+	mobile = (values.get("contact_mobile") or "").strip()
+	email = (values.get("contact_email") or "").strip()
+	if not (first or last or mobile or email):
+		return None
+
+	contact = frappe.get_doc(
+		{
+			"doctype": "Contact",
+			"first_name": first or party,
+			"last_name": last or None,
+			"mobile_no": mobile or None,
+			"links": [{"link_doctype": party_type, "link_name": party}],
+		}
+	)
+	if email:
+		contact.append("email_ids", {"email_id": email, "is_primary": 1})
+	if mobile:
+		contact.append("phone_nos", {"phone": mobile, "is_primary_mobile_no": 1})
+	contact.insert(ignore_permissions=True)
+
+	primary_field = "customer_primary_contact" if party_type == "Customer" else "supplier_primary_contact"
+	updates = {"mobile_no": mobile or None, "email_id": email or None}
+	if frappe.get_meta(party_type).has_field(primary_field):
+		updates[primary_field] = contact.name
+	frappe.db.set_value(party_type, party, updates, update_modified=False)
+	return contact.name
+
+
+def _create_party_address(party_type: str, party: str, values: dict) -> str | None:
+	"""Physical address for a new customer or supplier, linked back and set as primary."""
+	line1 = (values.get("address_line1") or "").strip()
+	city = (values.get("address_city") or "").strip()
+	if not (line1 or city):
+		return None
+
+	address = frappe.get_doc(
+		{
+			"doctype": "Address",
+			"address_title": party,
+			"address_type": "Billing",
+			"address_line1": line1 or city,
+			"address_line2": (values.get("address_line2") or "").strip() or None,
+			"city": city or None,
+			"country": (values.get("address_country") or "").strip() or None,
+			"is_primary_address": 1,
+			"is_shipping_address": 1,
+			"links": [{"link_doctype": party_type, "link_name": party}],
+		}
+	)
+	address.insert(ignore_permissions=True)
+
+	primary_field = "customer_primary_address" if party_type == "Customer" else "supplier_primary_address"
+	if frappe.get_meta(party_type).has_field(primary_field):
+		frappe.db.set_value(party_type, party, primary_field, address.name, update_modified=False)
+	return address.name
+
+
+def _create_party(party_type: str, values: str | dict | None) -> dict:
+	"""Create a customer or supplier together with its contact and address.
+
+	The form collects the whole picture — identity, statutory details, KYC documents,
+	contact and address — but ERPNext spreads that across three doctypes. The party is
+	inserted first so the other two can link to it; if either of them fails the party
+	is still there, and the failure is reported rather than silently swallowed.
+	"""
+	values = frappe.parse_json(values) if isinstance(values, str) else (values or {})
+	if not isinstance(values, dict):
+		frappe.throw(_("Invalid details."))
+
+	extras = {k: values.pop(k, None) for k in _CONTACT_FIELDS + _ADDRESS_FIELDS}
+
+	values["doctype"] = party_type
+	party = frappe.get_doc(values)
+	party.insert()
+
+	out = {"name": party.name, "doctype": party_type}
+	for label, builder in (("contact", _create_party_contact), ("address", _create_party_address)):
+		try:
+			out[label] = builder(party_type, party.name, extras)
+		except Exception as e:
+			frappe.log_error(frappe.get_traceback(), f"Kamil: {party_type} {label} failed")
+			out[f"{label}_error"] = str(e)
+
+	return out
+
+
+@frappe.whitelist()
+def create_customer(values: str | dict | None = None) -> dict:
+	"""Create a customer with its contact and address in one step."""
+	return _create_party("Customer", values)
+
+
+@frappe.whitelist()
+def create_supplier(values: str | dict | None = None) -> dict:
+	"""Create a supplier with its contact and address in one step."""
+	return _create_party("Supplier", values)
 
 
 @frappe.whitelist()
@@ -1683,29 +1836,38 @@ def get_inventory_analytics(company: str | None = None) -> dict:
 
 
 # doctype -> list of (label, target doctype, mapping "module.func") transitions
+# Order -> Invoice only. Delivery Notes, Purchase Receipts and Quotations are not part
+# of this app's flow: the invoice carries the stock movement itself via `update_stock`,
+# which is set on every invoice made here (see _stock_updating_invoice).
 _DOC_TRANSITIONS = {
-	"Quotation": [
-		("Sales Order", "Sales Order", "erpnext.selling.doctype.quotation.quotation.make_sales_order"),
-	],
 	"Sales Order": [
-		("Delivery Note", "Delivery Note", "erpnext.selling.doctype.sales_order.sales_order.make_delivery_note"),
 		("Sales Invoice", "Sales Invoice", "erpnext.selling.doctype.sales_order.sales_order.make_sales_invoice"),
-	],
-	"Delivery Note": [
-		("Sales Invoice", "Sales Invoice", "erpnext.stock.doctype.delivery_note.delivery_note.make_sales_invoice"),
 	],
 	"Material Request": [
 		("Purchase Order", "Purchase Order", "erpnext.stock.doctype.material_request.material_request.make_purchase_order"),
 		("Stock Entry", "Stock Entry", "erpnext.stock.doctype.material_request.material_request.make_stock_entry"),
 	],
 	"Purchase Order": [
-		("Purchase Receipt", "Purchase Receipt", "erpnext.buying.doctype.purchase_order.purchase_order.make_purchase_receipt"),
 		("Purchase Invoice", "Purchase Invoice", "erpnext.buying.doctype.purchase_order.purchase_order.make_purchase_invoice"),
 	],
-	"Purchase Receipt": [
-		("Purchase Invoice", "Purchase Invoice", "erpnext.stock.doctype.purchase_receipt.purchase_receipt.make_purchase_invoice"),
-	],
 }
+
+_STOCK_INVOICES = ("Sales Invoice", "Purchase Invoice")
+
+
+def _stock_updating_invoice(doc) -> None:
+	"""Make an invoice move stock itself.
+
+	With no Delivery Note or Purchase Receipt in the flow, an invoice that does not
+	update stock would leave the goods where they were — billed but never shipped or
+	received. A warehouse is required for it to post, so this is skipped when there is
+	nothing to post against.
+	"""
+	if doc.doctype not in _STOCK_INVOICES or not doc.meta.has_field("update_stock"):
+		return
+	if not any(row.get("warehouse") for row in (doc.get("items") or [])) and not doc.get("set_warehouse"):
+		return
+	doc.update_stock = 1
 
 
 @frappe.whitelist()
@@ -1733,6 +1895,7 @@ def make_next_document(doctype: str, name: str, target: str) -> dict:
 
 	method = frappe.get_attr(transition[2])
 	doc = method(name)
+	_stock_updating_invoice(doc)
 	doc.insert()
 	return {"name": doc.name, "doctype": doc.doctype}
 
@@ -1983,7 +2146,6 @@ _NOTIFICATION_SOURCES = (
 	("Sales Order", "Orders to deliver", ("To Deliver", "To Deliver and Bill"), "amber"),
 	("Purchase Order", "Orders to receive", ("To Receive", "To Receive and Bill"), "amber"),
 	("Material Request", "Requests pending", ("Pending",), "blue"),
-	("Quotation", "Open quotations", ("Open",), "blue"),
 )
 
 

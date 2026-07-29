@@ -88,6 +88,34 @@
         <div v-for="line in outcome.lines" :key="line" class="text-ink-gray-7">{{ line }}</div>
       </div>
 
+      <!-- The receipt, once there is a payment entry to show -->
+      <div v-if="receiptName" class="space-y-3 rounded-xl border border-outline-gray-1 bg-surface-white p-4">
+        <div class="flex flex-wrap items-center gap-2 text-sm font-semibold text-ink-gray-8">
+          <Receipt class="h-4 w-4 text-ink-gray-6" /> Payment receipt
+          <Badge theme="green" :label="receiptName" />
+        </div>
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <ComboField
+            label="Print format"
+            :options="printFormats"
+            :modelValue="printFormat"
+            @update:modelValue="(v) => (printFormat = v || 'Standard')"
+          />
+          <FormControl type="text" label="Send to (WhatsApp)" placeholder="+2547…" v-model="receiptPhone" />
+        </div>
+        <div v-if="receiptResult" class="text-sm" :class="receiptOk ? 'text-green-600' : 'text-red-600'">
+          {{ receiptResult }}
+        </div>
+        <div class="flex flex-wrap justify-end gap-2">
+          <Button label="Download PDF" @click="downloadReceipt">
+            <template #prefix><Download class="h-4 w-4" /></template>
+          </Button>
+          <Button variant="solid" :loading="sendingReceipt" label="Send via WhatsApp" @click="sendReceipt">
+            <template #prefix><MessageCircle class="h-4 w-4 text-green-600" /></template>
+          </Button>
+        </div>
+      </div>
+
       <!-- Actions -->
       <div v-if="!pr.can_approve" class="rounded-lg border border-outline-gray-1 bg-surface-gray-1 p-3 text-sm text-ink-gray-6">
         You can view this request but you do not have permission to approve payments.
@@ -156,6 +184,9 @@
 import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Button, Badge, FormControl, call } from 'frappe-ui'
+import Receipt from '~icons/lucide/receipt'
+import Download from '~icons/lucide/download'
+import MessageCircle from '~icons/lucide/message-circle'
 import Skeleton from '@/components/Skeleton.vue'
 import ComboField from '@/components/ComboField.vue'
 import { statusTheme } from '@/utils/status.js'
@@ -174,6 +205,17 @@ const outcome = ref(null)
 const mode = ref('')
 const modeOptions = ref([])
 
+// The payment entry this request produced — the receipt the payer asks for.
+const paidEntry = ref('')
+const receiptPhone = ref('')
+const receiptResult = ref('')
+const receiptOk = ref(false)
+const sendingReceipt = ref(false)
+const printFormats = ref([{ label: 'Standard', value: 'Standard' }])
+const printFormat = ref('Standard')
+
+const receiptName = computed(() => paidEntry.value || pr.value?.payment_entries?.[0] || '')
+
 // An internal transfer arrives as ?type=transfer — it is a drafted Payment Entry
 // rather than a Payment Request, so it loads and releases through its own endpoints.
 const isTransfer = computed(() => route.query.type === 'transfer')
@@ -188,6 +230,50 @@ const actionable = computed(() => {
     !['Paid', 'Payment Ordered', 'Cancelled'].includes(pr.value.status)
   )
 })
+
+async function loadPrintFormats() {
+  try {
+    printFormats.value = (await call('kamil.api.get_print_formats', { doctype: 'Payment Entry' })) || []
+    if (!printFormats.value.length) printFormats.value = [{ label: 'Standard', value: 'Standard' }]
+    printFormat.value = printFormats.value[0].value
+  } catch (e) {
+    printFormats.value = [{ label: 'Standard', value: 'Standard' }]
+  }
+}
+
+function downloadReceipt() {
+  const q = new URLSearchParams({
+    doctype: 'Payment Entry',
+    name: receiptName.value,
+    format: printFormat.value || 'Standard',
+    no_letterhead: '0',
+  })
+  window.open(`/api/method/frappe.utils.print_format.download_pdf?${q.toString()}`, '_blank')
+}
+
+async function sendReceipt() {
+  sendingReceipt.value = true
+  receiptResult.value = ''
+  try {
+    const out = await call('kamil.api.send_document_whatsapp', {
+      doctype: 'Payment Entry',
+      name: receiptName.value,
+      phone_number: receiptPhone.value || null,
+      message: `Payment receipt ${receiptName.value}`,
+      print_format: printFormat.value || null,
+    })
+    receiptOk.value = out?.success !== false
+    receiptResult.value = receiptOk.value
+      ? `Receipt sent to ${out?.phone_number || receiptPhone.value} ✓`
+      : out?.error || 'Could not send the receipt.'
+    if (out?.warning) receiptResult.value += ` — ${out.warning}`
+  } catch (e) {
+    receiptOk.value = false
+    receiptResult.value = e?.messages?.join(', ') || e?.message || 'Could not send the receipt.'
+  } finally {
+    sendingReceipt.value = false
+  }
+}
 
 async function loadModes() {
   try {
@@ -207,7 +293,10 @@ async function load() {
       { name: route.params.name },
     )
     mode.value = pr.value?.mode_of_payment || ''
+    receiptPhone.value = pr.value?.phone_number || ''
+    if (isTransfer.value) paidEntry.value = pr.value?.docstatus === 1 ? pr.value.name : ''
     await loadModes()
+    if (receiptName.value) loadPrintFormats()
   } catch (e) {
     error.value =
       e?.messages?.join(', ') ||
@@ -230,6 +319,8 @@ async function approve() {
         name: pr.value.name,
         mode_of_payment: mode.value || null,
       })
+      paidEntry.value = out.payment_entry || pr.value.name
+      loadPrintFormats()
       outcome.value = {
         ok: true,
         title: 'Transfer released.',
@@ -250,6 +341,8 @@ async function approve() {
         ? `Reconciled ${money(out.allocated_amount, pr.value.currency)} against ${pr.value.reference_name}.`
         : 'The entry was created but nothing was allocated — check it in ERPNext.',
     )
+    paidEntry.value = out.payment_entry || ''
+    loadPrintFormats()
     outcome.value = { ok: true, title: 'Approved.', lines }
     await load()
   } catch (e) {
