@@ -156,7 +156,7 @@ const form = reactive({
   recipient: '',
   phone_number: '',
   via_email: true,
-  via_whatsapp: false,
+  via_whatsapp: true,
 })
 
 const selectedPayable = computed(() => payables.value.find((p) => p.value === form.reference_name) || null)
@@ -176,7 +176,7 @@ function reset() {
     recipient: '',
     phone_number: '',
     via_email: true,
-    via_whatsapp: false,
+    via_whatsapp: true,
   })
   error.value = ''
   result.value = null

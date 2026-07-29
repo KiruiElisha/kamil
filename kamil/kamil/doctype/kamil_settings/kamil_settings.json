@@ -49,7 +49,7 @@
    "label": "Send approval requests by email"
   },
   {
-   "default": "0",
+   "default": "1",
    "fieldname": "notify_by_whatsapp",
    "fieldtype": "Check",
    "label": "Send approval requests by WhatsApp"
