@@ -78,6 +78,7 @@
               <Badge v-else-if="c.type === 'kind' && doc[c.field]" :theme="kindTheme(doc[c.field])" :label="doc[c.field]" />
               <span v-else-if="c.type === 'currency'" class="tabular-nums text-ink-gray-8">{{ money(doc[c.field], doc[curCurrency]) }}</span>
               <span v-else-if="c.type === 'date'" class="text-ink-gray-7">{{ fmtDate(doc[c.field]) }}</span>
+              <span v-else-if="c.type === 'ago'" class="text-ink-gray-6">{{ fmtDate(doc[c.field]) }}</span>
               <span v-else class="text-ink-gray-8">{{ doc[c.field] }}</span>
             </div>
           </div>
@@ -189,6 +190,37 @@
           </div>
         </div>
 
+        <!-- Money in against this invoice -->
+        <div v-if="payOpen" class="space-y-3 rounded-lg border border-outline-gray-1 bg-surface-gray-1 p-3">
+          <div class="flex flex-wrap items-center gap-2 text-sm font-semibold text-ink-gray-8">
+            <Wallet class="h-4 w-4 text-ink-gray-6" /> Record payment
+            <Badge theme="orange" :label="`Outstanding ${money(doc.outstanding_amount, doc[curCurrency])}`" />
+          </div>
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <FormControl type="number" label="Amount received" v-model="payForm.amount" />
+            <ComboField
+              label="Mode of Payment"
+              :options="modeOptions"
+              create-doctype="Mode of Payment"
+              :modelValue="payForm.mode_of_payment"
+              @update:modelValue="(v) => (payForm.mode_of_payment = v || '')"
+              @created="loadModes"
+            />
+            <FormControl type="text" label="Reference no." placeholder="M-Pesa code, cheque or slip no." v-model="payForm.reference_no" />
+            <FormControl type="date" label="Reference date" v-model="payForm.reference_date" />
+          </div>
+          <p class="text-xs text-ink-gray-5">
+            Creates a draft payment entry allocated against this invoice — review and submit it
+            from Payment Entries to settle the invoice. A bank or M-Pesa payment needs a
+            reference number; ERPNext will not save one without it.
+          </p>
+          <div v-if="payResult" class="text-sm" :class="payOk ? 'text-green-600' : 'text-red-600'">{{ payResult }}</div>
+          <div class="flex flex-wrap justify-end gap-2">
+            <Button label="Close" @click="payOpen = false" />
+            <Button variant="solid" label="Record payment" :loading="paySaving" @click="recordPayment" />
+          </div>
+        </div>
+
         <!-- Print panel -->
         <div v-if="printOpen" class="space-y-3 rounded-lg border border-outline-gray-1 bg-surface-gray-1 p-3">
           <div class="flex items-center gap-2 text-sm font-semibold text-ink-gray-8">
@@ -241,6 +273,9 @@
           </Dropdown>
           <Button v-if="canCancel" theme="red" label="Cancel doc" @click="cancelOpen = !cancelOpen">
             <template #prefix><Ban class="h-4 w-4" /></template>
+          </Button>
+          <Button v-if="canReceivePayment" label="Record payment" @click="togglePayment">
+            <template #prefix><Wallet class="h-4 w-4 text-ink-gray-6" /></template>
           </Button>
           <Button v-if="canRequestPayment" label="Request payment" @click="togglePaymentRequest">
             <template #prefix><Send class="h-4 w-4 text-ink-gray-6" /></template>
@@ -297,6 +332,7 @@ import ExternalLink from '~icons/lucide/external-link'
 import MessageCircle from '~icons/lucide/message-circle'
 import Printer from '~icons/lucide/printer'
 import Send from '~icons/lucide/send'
+import Wallet from '~icons/lucide/wallet'
 import BookOpen from '~icons/lucide/book-open'
 import Plus from '~icons/lucide/plus'
 import Ban from '~icons/lucide/ban'
@@ -316,7 +352,7 @@ const props = defineProps({
   child: { type: Object, default: null },
   currencyField: { type: String, default: 'currency' },
 })
-const emit = defineEmits(['submitted'])
+const emit = defineEmits(['submitted', 'create-from'])
 
 // What the server says this document may do: submit/cancel, or — when a workflow is
 // attached — only the transitions the workflow allows this user right now.
@@ -369,6 +405,14 @@ const prForm = reactive({
 })
 const modeOptions = ref([])
 
+// Receiving money against a sales invoice. Buying works the other way round — a
+// payment there goes through the request-and-approve flow, not straight out.
+const payOpen = ref(false)
+const paySaving = ref(false)
+const payResult = ref('')
+const payOk = ref(false)
+const payForm = reactive({ amount: null, mode_of_payment: '', reference_no: '', reference_date: '' })
+
 const waOpen = ref(false)
 const waPhone = ref('')
 const waMessage = ref('')
@@ -393,10 +437,20 @@ const isPaymentRequest = computed(() => curDoctype.value === 'Payment Request')
 
 // A payment can be requested against a submitted invoice or order. Requests are
 // raised against the document, so drafts and cancelled documents are out.
-const PAYABLE_DOCTYPES = ['Sales Invoice', 'Purchase Invoice', 'Sales Order', 'Purchase Order']
+// Buying only: a payment request is how the company asks to pay someone, so raising
+// one against our own sales document makes no sense.
+const PAYABLE_DOCTYPES = ['Purchase Invoice', 'Purchase Order']
 const canRequestPayment = computed(
   () => !!doc.value && doc.value.docstatus === 1 && PAYABLE_DOCTYPES.includes(curDoctype.value),
 )
+const canReceivePayment = computed(
+  () =>
+    !!doc.value &&
+    doc.value.docstatus === 1 &&
+    curDoctype.value === 'Sales Invoice' &&
+    Number(doc.value.outstanding_amount) > 0,
+)
+
 const prOutstanding = computed(() => {
   const d = doc.value
   if (!d) return 0
@@ -490,6 +544,8 @@ function resetPanels() {
   printOpen.value = false
   prOpen.value = false
   prResult.value = null
+  payOpen.value = false
+  payResult.value = ''
   cancelOpen.value = false
   cancelReasonInput.value = ''
   cancelReason.value = {}
@@ -569,85 +625,36 @@ watch(show, (v) => {
 async function makeNext(target) {
   error.value = ''
   try {
+    // Map the source onto the target and open the form on those values — nothing is
+    // written until the user presses Create, exactly as on the desk.
+    const draft = await call('kamil.api.get_next_document_draft', {
+      doctype: curDoctype.value,
+      name: curName.value,
+      target,
+    })
+    const cfg = findList(slugFor(target))
+    if (cfg?.create) {
+      show.value = false
+      emit('create-from', { target, config: cfg.create, values: draft?.values || {} })
+      return
+    }
+
+    // No form for this target in the app — fall back to creating the draft directly.
     const out = await call('kamil.api.make_next_document', {
       doctype: curDoctype.value,
       name: curName.value,
       target,
     })
-    emit('submitted') // let the source list refresh in the background
-    const slug = (out?.doctype || target).toLowerCase().replace(/ /g, '-')
-    const cfg = findList(slug)
+    emit('submitted')
     curDoctype.value = out?.doctype || target
     curName.value = out?.name
-    curColumns.value = cfg?.columns || []
+    curColumns.value = cfg?.view || cfg?.columns || []
     curChild.value = cfg?.create?.child || null
     curCurrency.value = cfg?.currencyField ?? 'currency'
     waPhone.value = ''
-    await load() // show the newly created draft in place
+    await load()
   } catch (e) {
     error.value = e?.messages?.join(', ') || e?.message || 'Could not create the document.'
-  }
-}
-
-async function loadModes() {
-  try {
-    modeOptions.value = (await call('kamil.api.list_modes_of_payment')) || []
-  } catch (e) {
-    modeOptions.value = []
-  }
-}
-
-function togglePaymentRequest() {
-  prOpen.value = !prOpen.value
-  if (!prOpen.value) return
-  prResult.value = ''
-  prForm.amount = prOutstanding.value || null
-  prForm.mode_of_payment = ''
-  if (!modeOptions.value.length) loadModes()
-}
-
-async function raisePaymentRequest() {
-  prSaving.value = true
-  prResult.value = null
-  try {
-    const created = await call('kamil.payment_flow.create_payment_request', {
-      reference_doctype: curDoctype.value,
-      reference_name: curName.value,
-      amount: prForm.amount || null,
-      mode_of_payment: prForm.mode_of_payment || null,
-      recipient: prForm.recipient || null,
-      phone_number: prForm.phone_number || null,
-    })
-
-    // Sending is separate so a mail failure never loses the request itself.
-    let sent = null
-    if (prForm.via_email || prForm.via_whatsapp) {
-      sent = await call('kamil.payment_flow.send_payment_request', {
-        name: created.name,
-        via_email: prForm.via_email ? 1 : 0,
-        via_whatsapp: prForm.via_whatsapp ? 1 : 0,
-        recipient: prForm.recipient || null,
-        phone_number: prForm.phone_number || null,
-      })
-    }
-
-    const lines = []
-    if (sent?.link) lines.push(`Approval link: ${sent.link}`)
-    if (sent?.email) lines.push(sent.email.sent ? `Emailed to ${sent.email.to}` : `Email not sent — ${sent.email.error}`)
-    if (sent?.whatsapp)
-      lines.push(sent.whatsapp.sent ? `WhatsApp sent to ${sent.whatsapp.to}` : `WhatsApp not sent — ${sent.whatsapp.error}`)
-    if (!lines.length) lines.push('Not sent — share it from the Payment Requests list when you are ready.')
-
-    prResult.value = { ok: true, title: `${created.name} raised and awaiting approval.`, lines }
-    emit('submitted') // the list behind this dialog now has one more request
-  } catch (e) {
-    prResult.value = {
-      ok: false,
-      title: 'Could not raise the payment request.',
-      lines: [e?.messages?.join(', ') || e?.message || 'Unknown error.'],
-    }
-  } finally {
-    prSaving.value = false
   }
 }
 

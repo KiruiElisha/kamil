@@ -6,7 +6,13 @@
       :key="i"
       class="flex flex-col gap-2 rounded-md border border-outline-gray-1 p-2 md:flex-row md:items-end"
     >
-      <div v-for="col in columns" :key="col.fieldname" class="w-full min-w-0 md:w-auto" :style="{ flex: col.flex || 1 }">
+      <div
+        v-for="col in columns"
+        :key="col.fieldname"
+        class="w-full min-w-0 md:w-auto md:min-w-[7.5rem]"
+        :style="{ flex: col.flex || 1 }"
+      >
+        <label class="mb-0.5 hidden text-[10px] leading-none text-ink-gray-5 md:block">{{ col.label }}</label>
         <LinkField
           v-if="col.fieldtype === 'link'"
           :doctype="col.options"
@@ -25,8 +31,7 @@
         <!-- Amount is qty x rate: derived, never typed, so it cannot disagree
              with the figures beside it or with what the server recalculates. -->
         <div v-else-if="col.fieldtype === 'amount'">
-          <div class="text-[10px] leading-none text-ink-gray-5">{{ col.label }}</div>
-          <div class="mt-1.5 truncate text-sm font-medium tabular-nums text-ink-gray-8">
+          <div class="truncate py-1.5 text-sm font-medium tabular-nums text-ink-gray-8">
             {{ money(amountOf(row)) }}
           </div>
         </div>
@@ -71,6 +76,9 @@ const props = defineProps({
   doctype: { type: String, default: '' },
   party: { type: String, default: '' },
   company: { type: String, default: '' },
+  // The document's own warehouse, used when the item has no default of its own.
+  warehouse: { type: String, default: '' },
+  currency: { type: String, default: '' },
 })
 
 const rateCol = computed(() => props.columns.find((c) => c.fieldtype === 'currency'))
@@ -86,7 +94,9 @@ const total = computed(() => rows.value.reduce((sum, r) => sum + amountOf(r), 0)
 
 function money(v) {
   try {
-    return new Intl.NumberFormat('en-KE', { maximumFractionDigits: 2 }).format(v || 0)
+    return props.currency
+      ? new Intl.NumberFormat('en-KE', { style: 'currency', currency: props.currency, maximumFractionDigits: 2 }).format(v || 0)
+      : new Intl.NumberFormat('en-KE', { maximumFractionDigits: 2 }).format(v || 0)
   } catch {
     return v
   }
@@ -106,6 +116,11 @@ async function fetchRate(i, itemCode) {
     if (!row || row.item_code !== itemCode) return
     if (rateCol.value && !row[rateCol.value.fieldname]) row[rateCol.value.fieldname] = r?.rate || 0
     if (!row.qty) row.qty = 1
+    // The item's own defaults fill the line in — a warehouse the user has already
+    // chosen for this row is left alone.
+    if (r?.uom && !row.uom) row.uom = r.uom
+    if (r?.warehouse && !row.warehouse) row.warehouse = r.warehouse
+    else if (!row.warehouse && props.warehouse) row.warehouse = props.warehouse
     sync()
   } catch (e) {
     /* leave the rate for manual entry */
@@ -133,4 +148,19 @@ function remove(i) {
   sync()
 }
 watch(rows, sync, { deep: true })
+
+// The rows are seeded once at mount, but a form can be filled in *after* that — a
+// mapped document ("Create Sales Invoice" off an order) arrives once the dialog is
+// already on screen. Without this the table kept its blank starter row and then
+// emitted it straight back, wiping the lines that had just been mapped in.
+watch(
+  () => props.modelValue,
+  (incoming) => {
+    if (!Array.isArray(incoming)) return
+    // Ignore the echo of our own emit, which would restart the cycle.
+    if (JSON.stringify(incoming) === JSON.stringify(rows.value)) return
+    rows.value = incoming.length ? incoming.map((row) => ({ ...row })) : [{}]
+  },
+  { deep: true },
+)
 </script>

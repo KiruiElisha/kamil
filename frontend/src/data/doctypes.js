@@ -35,33 +35,37 @@ const QTY_COL = { fieldname: 'qty', label: 'Qty', fieldtype: 'float', flex: 1 }
 const RATE_COL = { fieldname: 'rate', label: 'Rate', fieldtype: 'currency', flex: 1 }
 const wh = (fn, label) => ({ fieldname: fn, label, fieldtype: 'link', options: 'Warehouse', filters: { is_group: 0 }, flex: 1 })
 const AMOUNT_COL = { fieldname: 'amount', label: 'Amount', fieldtype: 'amount', flex: 1 }
-const SALES_ITEMS = { fieldname: 'items', title: 'Items', columns: [ITEM_COL, QTY_COL, RATE_COL, AMOUNT_COL] }
+// UOM and warehouse are filled from the item when one is picked, and stay editable.
+const UOM_COL = { fieldname: 'uom', label: 'UOM', fieldtype: 'link', options: 'UOM', flex: 1 }
+const ITEM_WH_COL = { ...wh('warehouse', 'Warehouse'), flex: 1 }
+const SALES_ITEMS = { fieldname: 'items', title: 'Items', columns: [ITEM_COL, QTY_COL, UOM_COL, ITEM_WH_COL, RATE_COL, AMOUNT_COL] }
 const BUY_ITEMS = SALES_ITEMS
 
 export const LISTS = [
   // Selling — invoices carry the stock movement themselves (update_stock).
   { key: 'sales-order', section: 'Selling', title: 'Sales Orders', doctype: 'Sales Order', icon: ShoppingCart, orderBy: 'modified desc',
-    columns: [ { label: 'Order', field: 'name' }, { label: 'Customer', field: 'customer_name' }, { label: 'Date', field: 'transaction_date', type: 'date' }, { label: 'Status', field: 'status', type: 'status' }, { label: 'Total', field: 'grand_total', type: 'currency' }, { label: 'Modified', field: 'modified', type: 'date' } ],
+    columns: [ { label: 'Order', field: 'name' }, { label: 'Customer', field: 'customer_name' }, { label: 'Date', field: 'transaction_date', type: 'date' }, { label: 'Status', field: 'status', type: 'status' }, { label: 'Total', field: 'grand_total', type: 'currency' }, { label: 'Currency', field: 'currency' }, { label: 'Modified', field: 'modified', type: 'ago' } ],
     create: { doctype: 'Sales Order', title: 'New Sales Order', label: 'Order', child: SALES_ITEMS,
-      fields: [ COMPANY, CUSTOMER, { fieldname: 'delivery_date', label: 'Delivery Date', fieldtype: 'date', default: 'today' }, VEHICLE, WAREHOUSE ] } },
+      fields: [ COMPANY, CUSTOMER, { fieldname: 'delivery_date', label: 'Delivery Date', fieldtype: 'date', default: 'today' }, VEHICLE, WAREHOUSE , { fieldname: 'currency', label: 'Currency', fieldtype: 'link', options: 'Currency' } ] } },
   { key: 'sales-invoice', section: 'Selling', title: 'Sales Invoices', doctype: 'Sales Invoice', icon: Receipt, orderBy: 'modified desc',
-    columns: [ { label: 'Invoice', field: 'name' }, { label: 'Customer', field: 'customer_name' }, { label: 'Date', field: 'posting_date', type: 'date' }, { label: 'Status', field: 'status', type: 'status' }, { label: 'Total', field: 'grand_total', type: 'currency' }, { label: 'Modified', field: 'modified', type: 'date' } ],
+    columns: [ { label: 'Invoice', field: 'name' }, { label: 'Customer', field: 'customer_name' }, { label: 'Date', field: 'posting_date', type: 'date' }, { label: 'Status', field: 'status', type: 'status' }, { label: 'Total', field: 'grand_total', type: 'currency' }, { label: 'Currency', field: 'currency' }, { label: 'Modified', field: 'modified', type: 'ago' } ],
     create: { doctype: 'Sales Invoice', title: 'New Sales Invoice', label: 'Invoice', child: SALES_ITEMS,
-      fields: [ COMPANY, CUSTOMER, { fieldname: 'due_date', label: 'Due Date', fieldtype: 'date' }, VEHICLE, WAREHOUSE, { fieldname: 'update_stock', label: 'Update stock', fieldtype: 'check', default: 1 } ] } },
+      fields: [ COMPANY, CUSTOMER, { fieldname: 'due_date', label: 'Due Date', fieldtype: 'date' }, VEHICLE, WAREHOUSE, { fieldname: 'currency', label: 'Currency', fieldtype: 'link', options: 'Currency' },
+        { fieldname: 'custom_bol', label: 'Bill of Lading', fieldtype: 'attach' },
+        { fieldname: 'update_stock', label: 'Update stock', fieldtype: 'check', default: 1 } ] } },
   // Buying
-  { key: 'material-request', section: 'Buying', title: 'Material Requests', doctype: 'Material Request', icon: ClipboardList, orderBy: 'modified desc',
-    columns: [ { label: 'Request', field: 'name' }, { label: 'Type', field: 'material_request_type', type: 'kind' }, { label: 'Date', field: 'transaction_date', type: 'date' }, { label: 'Status', field: 'status', type: 'status' }, { label: 'Modified', field: 'modified', type: 'date' } ],
-    create: { doctype: 'Material Request', title: 'New Material Request', label: 'Request',
-      child: { fieldname: 'items', title: 'Items', columns: [ ITEM_COL, QTY_COL, wh('warehouse', 'For Warehouse'), { fieldname: 'schedule_date', label: 'Required By', fieldtype: 'date', flex: 1 } ] },
-      fields: [ COMPANY, { fieldname: 'material_request_type', label: 'Type', fieldtype: 'select', selectOptions: sel(['Purchase', 'Material Transfer', 'Material Issue', 'Manufacture', 'Customer Provided']), default: 'Purchase' }, { fieldname: 'schedule_date', label: 'Required By', fieldtype: 'date', default: 'today' } ] } },
   { key: 'purchase-order', section: 'Buying', title: 'Purchase Orders', doctype: 'Purchase Order', icon: ShoppingBag, orderBy: 'modified desc',
-    columns: [ { label: 'Order', field: 'name' }, { label: 'Supplier', field: 'supplier_name' }, { label: 'Date', field: 'transaction_date', type: 'date' }, { label: 'Status', field: 'status', type: 'status' }, { label: 'Total', field: 'grand_total', type: 'currency' }, { label: 'Modified', field: 'modified', type: 'date' } ],
+    columns: [ { label: 'Order', field: 'name' }, { label: 'Supplier', field: 'supplier_name' }, { label: 'Date', field: 'transaction_date', type: 'date' }, { label: 'Status', field: 'status', type: 'status' }, { label: 'Total', field: 'grand_total', type: 'currency' }, { label: 'Currency', field: 'currency' }, { label: 'Modified', field: 'modified', type: 'ago' } ],
     create: { doctype: 'Purchase Order', title: 'New Purchase Order', label: 'Order', child: BUY_ITEMS,
-      fields: [ COMPANY, SUPPLIER, { fieldname: 'schedule_date', label: 'Required By', fieldtype: 'date', default: 'today' }, WAREHOUSE ] } },
+      fields: [ COMPANY, SUPPLIER, { fieldname: 'schedule_date', label: 'Required By', fieldtype: 'date', default: 'today' }, WAREHOUSE , { fieldname: 'currency', label: 'Currency', fieldtype: 'link', options: 'Currency' } ] } },
   { key: 'purchase-invoice', section: 'Buying', title: 'Purchase Invoices', doctype: 'Purchase Invoice', icon: FileText, orderBy: 'modified desc',
-    columns: [ { label: 'Invoice', field: 'name' }, { label: 'Supplier', field: 'supplier_name' }, { label: 'Date', field: 'posting_date', type: 'date' }, { label: 'Status', field: 'status', type: 'status' }, { label: 'Total', field: 'grand_total', type: 'currency' }, { label: 'Modified', field: 'modified', type: 'date' } ],
+    columns: [ { label: 'Invoice', field: 'name' }, { label: 'Supplier', field: 'supplier_name' }, { label: 'Bill No', field: 'bill_no' }, { label: 'Date', field: 'posting_date', type: 'date' }, { label: 'Status', field: 'status', type: 'status' }, { label: 'Total', field: 'grand_total', type: 'currency' }, { label: 'Currency', field: 'currency' }, { label: 'Modified', field: 'modified', type: 'ago' } ],
     create: { doctype: 'Purchase Invoice', title: 'New Purchase Invoice', label: 'Invoice', child: BUY_ITEMS,
-      fields: [ COMPANY, SUPPLIER, WAREHOUSE, { fieldname: 'update_stock', label: 'Update stock', fieldtype: 'check', default: 1 } ] } },
+      fields: [ COMPANY, SUPPLIER, WAREHOUSE, { fieldname: 'currency', label: 'Currency', fieldtype: 'link', options: 'Currency' },
+        { fieldname: 'bill_no', label: 'Supplier Invoice No', fieldtype: 'data' },
+        { fieldname: 'bill_date', label: 'Supplier Invoice Date', fieldtype: 'date' },
+        { fieldname: 'custom_supplier_invoice', label: 'Supplier Invoice (attachment)', fieldtype: 'attach' },
+        { fieldname: 'update_stock', label: 'Update stock', fieldtype: 'check', default: 1 } ] } },
   // Inventory
   { key: 'item', section: 'Inventory', title: 'Items', doctype: 'Item', icon: Package, orderBy: 'modified desc',
     view: [
@@ -78,16 +82,16 @@ export const LISTS = [
       { label: 'Stock Item', field: 'is_stock_item', type: 'kind' },
       { label: 'Disabled', field: 'disabled', type: 'kind' },
     ],
-    columns: [ { label: 'Item Code', field: 'name' }, { label: 'Name', field: 'item_name' }, { label: 'Group', field: 'item_group' }, { label: 'UOM', field: 'stock_uom' }, { label: 'Modified', field: 'modified', type: 'date' } ],
+    columns: [ { label: 'Item Code', field: 'name' }, { label: 'Name', field: 'item_name' }, { label: 'Group', field: 'item_group' }, { label: 'UOM', field: 'stock_uom' }, { label: 'Modified', field: 'modified', type: 'ago' } ],
     create: { doctype: 'Item', title: 'New Item', label: 'Item',
       fields: [ { fieldname: 'item_code', label: 'Item Code', fieldtype: 'data' }, { fieldname: 'item_name', label: 'Item Name', fieldtype: 'data' }, { fieldname: 'item_group', label: 'Item Group', fieldtype: 'link', options: 'Item Group' }, { fieldname: 'stock_uom', label: 'Default UOM', fieldtype: 'link', options: 'UOM' } ] } },
   { key: 'stock-entry', section: 'Inventory', title: 'Stock Entries', doctype: 'Stock Entry', icon: Repeat, orderBy: 'modified desc',
-    columns: [ { label: 'Entry', field: 'name' }, { label: 'Type', field: 'stock_entry_type', type: 'kind' }, { label: 'Date', field: 'posting_date', type: 'date' }, { label: 'State', field: 'docstatus', type: 'docstatus' }, { label: 'Modified', field: 'modified', type: 'date' } ],
+    columns: [ { label: 'Entry', field: 'name' }, { label: 'Type', field: 'stock_entry_type', type: 'kind' }, { label: 'Date', field: 'posting_date', type: 'date' }, { label: 'State', field: 'docstatus', type: 'docstatus' }, { label: 'Modified', field: 'modified', type: 'ago' } ],
     create: { doctype: 'Stock Entry', title: 'New Stock Entry', label: 'Entry',
       child: { fieldname: 'items', title: 'Items', columns: [ ITEM_COL, QTY_COL, wh('s_warehouse', 'Source'), wh('t_warehouse', 'Target') ] },
       fields: [ COMPANY, { fieldname: 'stock_entry_type', label: 'Type', fieldtype: 'select', selectOptions: sel(['Material Issue', 'Material Receipt', 'Material Transfer', 'Repack']), default: 'Material Receipt' } ] } },
   { key: 'stock-reconciliation', section: 'Inventory', title: 'Stock Reconciliations', doctype: 'Stock Reconciliation', icon: Scale, orderBy: 'modified desc',
-    columns: [ { label: 'Reconciliation', field: 'name' }, { label: 'Purpose', field: 'purpose', type: 'kind' }, { label: 'Date', field: 'posting_date', type: 'date' }, { label: 'State', field: 'docstatus', type: 'docstatus' }, { label: 'Modified', field: 'modified', type: 'date' } ],
+    columns: [ { label: 'Reconciliation', field: 'name' }, { label: 'Purpose', field: 'purpose', type: 'kind' }, { label: 'Date', field: 'posting_date', type: 'date' }, { label: 'State', field: 'docstatus', type: 'docstatus' }, { label: 'Modified', field: 'modified', type: 'ago' } ],
     create: { doctype: 'Stock Reconciliation', title: 'New Stock Reconciliation', label: 'Reconciliation',
       child: { fieldname: 'items', title: 'Items', columns: [ ITEM_COL, wh('warehouse', 'Warehouse'), QTY_COL, { fieldname: 'valuation_rate', label: 'Rate', fieldtype: 'currency', flex: 1 } ] },
       fields: [ COMPANY, { fieldname: 'purpose', label: 'Purpose', fieldtype: 'select', selectOptions: sel(['Stock Reconciliation', 'Opening Stock']), default: 'Stock Reconciliation' } ] } },
@@ -100,12 +104,12 @@ export const LISTS = [
       { label: 'Mode', field: 'mode_of_payment', type: 'kind' },
       { label: 'Status', field: 'status', type: 'status' },
       { label: 'Amount', field: 'grand_total', type: 'currency' },
-      { label: 'Modified', field: 'modified', type: 'date' },
+      { label: 'Modified', field: 'modified', type: 'ago' },
     ] },
   { key: 'payment-entry', section: 'Accounts', title: 'Payment Entries', doctype: 'Payment Entry', icon: CreditCard, orderBy: 'modified desc', currencyField: 'paid_to_account_currency', special: 'payment',
-    columns: [ { label: 'Payment', field: 'name' }, { label: 'Type', field: 'payment_type', type: 'kind' }, { label: 'Party', field: 'party_name' }, { label: 'Date', field: 'posting_date', type: 'date' }, { label: 'State', field: 'docstatus', type: 'docstatus' }, { label: 'Amount', field: 'paid_amount', type: 'currency' }, { label: 'Modified', field: 'modified', type: 'date' } ] },
+    columns: [ { label: 'Payment', field: 'name' }, { label: 'Type', field: 'payment_type', type: 'kind' }, { label: 'Party', field: 'party_name' }, { label: 'Date', field: 'posting_date', type: 'date' }, { label: 'State', field: 'docstatus', type: 'docstatus' }, { label: 'Amount', field: 'paid_amount', type: 'currency' }, { label: 'Modified', field: 'modified', type: 'ago' } ] },
   { key: 'journal-entry', section: 'Accounts', title: 'Journal Entries', doctype: 'Journal Entry', icon: BookOpen, orderBy: 'modified desc', currencyField: '',
-    columns: [ { label: 'Entry', field: 'name' }, { label: 'Type', field: 'voucher_type', type: 'kind' }, { label: 'Date', field: 'posting_date', type: 'date' }, { label: 'State', field: 'docstatus', type: 'docstatus' }, { label: 'Debit', field: 'total_debit', type: 'currency' }, { label: 'Modified', field: 'modified', type: 'date' } ],
+    columns: [ { label: 'Entry', field: 'name' }, { label: 'Type', field: 'voucher_type', type: 'kind' }, { label: 'Date', field: 'posting_date', type: 'date' }, { label: 'State', field: 'docstatus', type: 'docstatus' }, { label: 'Debit', field: 'total_debit', type: 'currency' }, { label: 'Modified', field: 'modified', type: 'ago' } ],
     create: { doctype: 'Journal Entry', title: 'New Journal Entry', label: 'Journal',
       child: { fieldname: 'accounts', title: 'Accounting Entries', columns: [ { fieldname: 'account', label: 'Account', fieldtype: 'link', options: 'Account', filters: { is_group: 0 }, flex: 2 }, { fieldname: 'debit_in_account_currency', label: 'Debit', fieldtype: 'currency', flex: 1 }, { fieldname: 'credit_in_account_currency', label: 'Credit', fieldtype: 'currency', flex: 1 } ] },
       fields: [ COMPANY, { fieldname: 'voucher_type', label: 'Type', fieldtype: 'select', selectOptions: sel(['Journal Entry', 'Bank Entry', 'Cash Entry', 'Contra Entry', 'Credit Note', 'Debit Note']), default: 'Journal Entry' }, { fieldname: 'posting_date', label: 'Date', fieldtype: 'date', default: 'today' } ] } },
@@ -146,7 +150,7 @@ LISTS.push(
       { label: 'Tax ID', field: 'tax_id' },
       { label: 'Verification', field: 'custom_verfication_status', type: 'status' },
       { label: 'Approval', field: 'workflow_state', type: 'status' },
-      { label: 'Modified', field: 'modified', type: 'date' },
+      { label: 'Modified', field: 'modified', type: 'ago' },
     ],
     // The whole customer record in one modal. Fields a site does not have (the
     // verification status is a local customisation) are dropped by CreateDialog,
@@ -211,7 +215,7 @@ LISTS.push(
       { label: 'Driver', field: 'custom_driver_name' },
       { label: 'Transporter', field: 'custom_transporter', type: 'kind' },
       { label: 'Model', field: 'model' },
-      { label: 'Modified', field: 'modified', type: 'date' },
+      { label: 'Modified', field: 'modified', type: 'ago' },
     ],
     create: { doctype: 'Vehicle', title: 'New Vehicle', label: 'Vehicle',
       // Compartments travel with the vehicle onto every transport document.
@@ -257,7 +261,7 @@ LISTS.push(
       { label: 'Type', field: 'supplier_type', type: 'kind' },
       { label: 'Group', field: 'supplier_group' },
       { label: 'Tax ID', field: 'tax_id' },
-      { label: 'Modified', field: 'modified', type: 'date' },
+      { label: 'Modified', field: 'modified', type: 'ago' },
     ],
     // Same shape as the customer form: identity, contact, address, KYC, buying terms.
     create: { doctype: 'Supplier', title: 'New Supplier', label: 'Supplier',

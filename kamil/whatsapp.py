@@ -273,6 +273,17 @@ def send_text(to_number: str, message: str, sender: str | None = None) -> dict:
 	return result
 
 
+def _with_extension(file_name: str | None, media_url: str) -> str | None:
+	"""Give the attachment the extension its URL implies, if it has none."""
+	if not file_name:
+		return file_name
+	if "." in file_name.rsplit("/", 1)[-1]:
+		return file_name
+
+	url_ext = media_url.rsplit(".", 1)[-1].lower() if "." in media_url.rsplit("/", 1)[-1] else "pdf"
+	return f"{file_name}.{url_ext[:8]}"
+
+
 def send_media(
 	to_number: str,
 	message: str,
@@ -285,6 +296,12 @@ def send_media(
 	_validate_number(phone)
 
 	settings = _settings(sender)
+	# WhatsApp decides how to present an attachment from the file name it is given: a
+	# name with no extension arrives as an unnamed blob the recipient often cannot open.
+	# The integration's own wrapper appended ".pdf" for its callers; this does the same
+	# for whatever the media URL actually points at.
+	file_name = _with_extension(file_name, media_url)
+
 	result = _result(
 		_post(
 			{
@@ -389,7 +406,7 @@ def send_document(
 	if not message:
 		message = _("Please find attached {0}: {1}").format(_(doctype), name)
 
-	result = send_media(phone, message, media_url, file_name.replace(".pdf", ""), sender)
+	result = send_media(phone, message, media_url, file_name, sender)
 	result["media_url"] = media_url
 	if warning:
 		result["warning"] = warning

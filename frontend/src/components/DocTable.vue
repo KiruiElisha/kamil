@@ -114,6 +114,7 @@
           {{ fmtCurrency(item, row[currencyField]) }}
         </span>
         <span v-else-if="column.type === 'date'" class="text-ink-gray-6">{{ fmtDate(item) }}</span>
+        <span v-else-if="column.type === 'ago'" class="text-ink-gray-5" :title="fmtDateTime(item)">{{ ago(item) }}</span>
         <span v-else :class="column.key === 'name' ? 'font-medium text-ink-gray-8' : 'text-ink-gray-7'">
           {{ item }}
         </span>
@@ -123,6 +124,14 @@
     <CreateDialog v-if="createConfig" v-model="showCreate" :config="createConfig" @created="onCreated" />
     <PaymentDialog v-if="special === 'payment'" v-model="showPayment" @created="onCreated" />
     <PaymentRequestDialog v-if="special === 'payment-request'" v-model="showRequest" @created="onCreated" />
+    <!-- "Create Sales Invoice" off an order opens here, prefilled with the mapping -->
+    <CreateDialog
+      v-if="transfer.config"
+      v-model="showTransfer"
+      :config="transfer.config"
+      :prefill="transfer.values"
+      @created="onTransferred"
+    />
     <DocViewDialog
       v-model="showView"
       :doctype="doctype"
@@ -131,6 +140,7 @@
       :child="createConfig?.child || null"
       :currency-field="currencyField"
       @submitted="onCreated"
+      @create-from="openTransfer"
     />
   </div>
 </template>
@@ -173,6 +183,9 @@ const showPayment = ref(false)
 const showRequest = ref(false)
 const showView = ref(false)
 const viewName = ref('')
+// A document mapped from another one, waiting to be reviewed and saved.
+const showTransfer = ref(false)
+const transfer = ref({ config: null, values: null })
 
 const isMobile = useIsMobile()
 
@@ -211,6 +224,7 @@ function subtitle(row) {
   const parts = []
   if (partyField.value && row[partyField.value]) parts.push(row[partyField.value])
   if (dateField.value && row[dateField.value]) parts.push(fmtDate(row[dateField.value]))
+  if (row.modified) parts.push(ago(row.modified))
   return parts.join(' · ')
 }
 
@@ -330,6 +344,16 @@ function clearFilters() {
   applyFilters()
 }
 
+function openTransfer({ config, values }) {
+  transfer.value = { config, values }
+  showTransfer.value = true
+}
+
+function onTransferred() {
+  showTransfer.value = false
+  onCreated()
+}
+
 function openDoc(row) {
   haptic()
   viewName.value = row.name
@@ -346,5 +370,40 @@ function fmtCurrency(v, currency) {
 function fmtDate(v) {
   if (!v) return ''
   return new Date(v).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+}
+function fmtDateTime(v) {
+  if (!v) return ''
+  return new Date(String(v).replace(' ', 'T')).toLocaleString('en-GB', {
+    day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  })
+}
+// "3 minutes ago" reads faster than a timestamp when scanning a list; the exact time
+// is still there on hover.
+function ago(v) {
+  if (!v) return ''
+  const then = new Date(String(v).replace(' ', 'T')).getTime()
+  if (!Number.isFinite(then)) return ''
+  const secs = Math.round((Date.now() - then) / 1000)
+  if (secs < 45) return 'just now'
+  const units = [
+    ['minute', 60],
+    ['hour', 3600],
+    ['day', 86400],
+    ['week', 604800],
+    ['month', 2592000],
+    ['year', 31536000],
+  ]
+  let label = 'year'
+  let size = 31536000
+  for (let i = 0; i < units.length; i++) {
+    const next = units[i + 1]
+    if (!next || secs < next[1]) {
+      label = units[i][0]
+      size = units[i][1]
+      break
+    }
+  }
+  const n = Math.max(1, Math.round(secs / size))
+  return `${n} ${label}${n > 1 ? 's' : ''} ago`
 }
 </script>

@@ -12,6 +12,8 @@ they actually exist on the target DocType, so the same code works on a
 stripped-down site and on the full Kamil Energy production setup.
 """
 
+import datetime
+import decimal
 import json
 import re
 
@@ -546,12 +548,33 @@ def make_invoice_from_order(order_type: str, order_name: str):
 
 
 @frappe.whitelist()
-def record_payment(invoice_type: str, invoice_name: str, amount: float | str | None = None, mode_of_payment: str | None = None):
-	"""Create a DRAFT Payment Entry against an existing invoice and return its name."""
+def record_payment(
+	invoice_type: str,
+	invoice_name: str,
+	amount: float | str | None = None,
+	mode_of_payment: str | None = None,
+	reference_no: str | None = None,
+	reference_date: str | None = None,
+):
+	"""Create a DRAFT Payment Entry against an existing invoice and return its name.
+
+	The mode of payment picks the account the money moves through — passed to
+	``get_payment_entry`` as the bank account so ERPNext derives the currencies itself.
+	A bank transaction also needs a reference number and date, which ERPNext refuses to
+	save without; the date falls back to today when only a number is given.
+	"""
 	from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
 
 	dt = "Sales Invoice" if invoice_type == "Sales" else "Purchase Invoice"
-	pe = get_payment_entry(dt, invoice_name)
+
+	account = None
+	if mode_of_payment:
+		from kamil.payment_flow import _mode_of_payment_account
+
+		company = frappe.db.get_value(dt, invoice_name, "company")
+		account = _mode_of_payment_account(mode_of_payment, company)
+
+	pe = get_payment_entry(dt, invoice_name, bank_account=account)
 	if mode_of_payment:
 		pe.mode_of_payment = mode_of_payment
 	if amount:
@@ -560,8 +583,18 @@ def record_payment(invoice_type: str, invoice_name: str, amount: float | str | N
 		pe.received_amount = amount
 		if pe.references:
 			pe.references[0].allocated_amount = amount
+
+	if reference_no:
+		pe.reference_no = reference_no
+		pe.reference_date = reference_date or nowdate()
+
 	pe.insert()
-	return {"name": pe.name, "doctype": pe.doctype}
+	return {
+		"name": pe.name,
+		"doctype": pe.doctype,
+		"paid_amount": flt(pe.paid_amount),
+		"account": pe.paid_to if dt == "Sales Invoice" else pe.paid_from,
+	}
 
 
 @frappe.whitelist()
@@ -600,6 +633,78 @@ _QUICK_ENTRY_SKIP = (
 	"Geolocation", "Barcode", "Code", "Markdown Editor", "Text Editor", "HTML Editor",
 	"Password", "Read Only", "Rating", "Duration", "Icon", "Color",
 )
+# Attach fields are renderable (the forms upload the file), so they are not skipped.
+_QUICK_ENTRY_SKIP = tuple(f for f in _QUICK_ENTRY_SKIP if f not in ("Attach", "Attach Image"))
+
+# Mandatory fields ERPNext fills in itself when a document is built. Asking for these
+# in a create form would be noise — and getting them wrong is worse than leaving them.
+_AUTOFILLED_FIELDS = {
+	"naming_series", "company", "posting_date", "posting_time", "transaction_date", "due_date",
+	"currency", "conversion_rate", "selling_price_list", "buying_price_list", "price_list_currency",
+	"plc_conversion_rate", "debit_to", "credit_to", "party_account_currency", "status",
+	"letter_head", "language", "territory", "customer_group", "supplier_group", "company_address",
+	"against_income_account", "is_opening", "docstatus", "title", "customer_name", "supplier_name",
+	"base_grand_total", "grand_total", "total", "net_total", "base_net_total", "rounded_total",
+	"schedule_date", "set_posting_time", "update_stock", "apply_discount_on",
+}
+
+# App-facing fieldtype for each Frappe fieldtype the create forms can render.
+_FORM_FIELDTYPES = {
+	"Data": "data", "Select": "select", "Link": "link", "Dynamic Link": "data",
+	"Date": "date", "Datetime": "date", "Check": "check", "Currency": "currency",
+	"Float": "float", "Int": "float", "Percent": "float", "Small Text": "textarea",
+	"Long Text": "textarea", "Text": "textarea", "Attach": "attach", "Attach Image": "attach",
+	"Phone": "data",
+}
+
+
+@frappe.whitelist()
+def get_missing_mandatory_fields(doctype: str, known: str | list | None = None) -> list:
+	"""Mandatory fields a create form does not already ask for.
+
+	Sites add their own required custom fields — a bill of lading, a vehicle, a
+	commission — and a document cannot be submitted without them. Rather than hard-code
+	each site's customisations, the form asks the doctype what else it needs and renders
+	that alongside the fields the app declares itself.
+	"""
+	if not doctype or not frappe.db.exists("DocType", doctype):
+		return []
+
+	if isinstance(known, str):
+		try:
+			known = frappe.parse_json(known)
+		except Exception:
+			known = [k.strip() for k in known.split(",") if k.strip()]
+	known = set(known or [])
+
+	out = []
+	for df in frappe.get_meta(doctype).fields:
+		if not df.reqd or df.hidden or df.read_only:
+			continue
+		if df.fieldname in known or df.fieldname in _AUTOFILLED_FIELDS:
+			continue
+		fieldtype = _FORM_FIELDTYPES.get(df.fieldtype)
+		if not fieldtype:
+			continue
+		# A field with a default needs no prompting — the document arrives with it.
+		if df.default and df.fieldtype not in ("Select",):
+			continue
+		out.append(
+			{
+				"fieldname": df.fieldname,
+				"label": _(df.label or df.fieldname),
+				"fieldtype": fieldtype,
+				"options": df.options or "",
+				"reqd": 1,
+				"description": df.description or "",
+				"selectOptions": [
+					{"label": o.strip() or "—", "value": o.strip()}
+					for o in (df.options or "").split("\n")
+					if df.fieldtype == "Select"
+				],
+			}
+		)
+	return out
 _QUICK_ENTRY_MAX_FIELDS = 12
 
 
@@ -708,6 +813,10 @@ def create_document(doctype: str, values: str | dict | None = None):
 		)
 	doc = frappe.get_doc(values)
 	_fill_from_vehicle(doc)
+	# No Delivery Notes or Purchase Receipts in this flow, so an invoice carries the
+	# stock movement itself. Only defaulted — a caller that passed update_stock keeps it.
+	if "update_stock" not in values:
+		_stock_updating_invoice(doc)
 	doc.insert()
 	return {"name": doc.name, "doctype": doc.doctype}
 
@@ -1748,7 +1857,34 @@ def get_item_rate(
 		"price_list": price_list,
 		"item_name": item.item_name,
 		"uom": item.stock_uom,
+		"warehouse": _default_item_warehouse(item_code, company, selling),
 	}
+
+
+def _default_item_warehouse(item_code: str, company: str | None, selling: bool) -> str | None:
+	"""Where a line for this item should default to.
+
+	Item Defaults first (that is where a warehouse is set per company), then the
+	site-wide Stock Settings default. Both are checked against the company so a line
+	never defaults to another company's store.
+	"""
+	if not company:
+		return None
+
+	row = frappe.db.get_value(
+		"Item Default",
+		{"parent": item_code, "company": company},
+		["default_warehouse", "buying_cost_center", "selling_cost_center"],
+		as_dict=True,
+	)
+	warehouse = (row or {}).get("default_warehouse")
+	if warehouse:
+		return warehouse
+
+	default_wh = frappe.db.get_single_value("Stock Settings", "default_warehouse")
+	if default_wh and frappe.db.get_value("Warehouse", default_wh, "company") == company:
+		return default_wh
+	return None
 
 
 @frappe.whitelist()
@@ -1843,10 +1979,6 @@ _DOC_TRANSITIONS = {
 	"Sales Order": [
 		("Sales Invoice", "Sales Invoice", "erpnext.selling.doctype.sales_order.sales_order.make_sales_invoice"),
 	],
-	"Material Request": [
-		("Purchase Order", "Purchase Order", "erpnext.stock.doctype.material_request.material_request.make_purchase_order"),
-		("Stock Entry", "Stock Entry", "erpnext.stock.doctype.material_request.material_request.make_stock_entry"),
-	],
 	"Purchase Order": [
 		("Purchase Invoice", "Purchase Invoice", "erpnext.buying.doctype.purchase_order.purchase_order.make_purchase_invoice"),
 	],
@@ -1878,6 +2010,85 @@ def get_doc_transitions(doctype: str) -> list:
 		if frappe.has_permission(target, "create"):
 			out.append({"label": label, "target": target})
 	return out
+
+
+def _scalar(value):
+	"""A JSON-safe version of a field value, or None if it cannot travel.
+
+	Dates and Decimals arrive as objects; dropping them would silently lose the
+	posting date or an amount, so they are stringified rather than skipped.
+	"""
+	if isinstance(value, (str, int, float)):
+		return value
+	if isinstance(value, (datetime.date, datetime.datetime, datetime.time)):
+		return str(value)
+	if isinstance(value, decimal.Decimal):
+		return flt(value)
+	return None
+
+
+def _plain_row(row) -> dict:
+	"""A child row as a plain dict.
+
+	`hasattr(row, "as_dict")` is not enough: frappe._dict answers every attribute with
+	None rather than raising, so the check passes and the call then fails.
+	"""
+	if isinstance(row, dict):
+		return dict(row)
+	as_dict = getattr(row, "as_dict", None)
+	return as_dict() if callable(as_dict) else dict(row)
+
+
+@frappe.whitelist()
+def get_next_document_draft(doctype: str, name: str, target: str) -> dict:
+	"""Map a source document onto the next one and return it **unsaved**.
+
+	The app used to insert the mapped draft straight away, which left a half-considered
+	document behind whenever someone changed their mind. Instead the mapped values come
+	back and the create form opens on top of them, as the desk does.
+	"""
+	transition = next((t for t in _DOC_TRANSITIONS.get(doctype, []) if t[1] == target), None)
+	if not transition:
+		frappe.throw(_("Cannot create {0} from {1}.").format(target, doctype))
+
+	frappe.has_permission(doctype, "read", doc=name, throw=True)
+	frappe.has_permission(target, "create", throw=True)
+
+	doc = frappe.get_attr(transition[2])(name)
+	_stock_updating_invoice(doc)
+
+	values = {}
+	for field, value in doc.as_dict().items():
+		if value in (None, "") or field.startswith("_"):
+			continue
+		if isinstance(value, list):
+			# Every child table travels, not just the lines: taxes, compartments and the
+			# rest are part of what the mapping produced, and dropping them would quietly
+			# change the document the user thought they were creating.
+			rows = [
+				{
+					k: _scalar(v)
+					for k, v in _plain_row(row).items()
+					if v not in (None, "") and not k.startswith("_") and k not in _CHILD_META_FIELDS
+				}
+				for row in value
+			]
+			if rows:
+				values[field] = rows
+		else:
+			scalar = _scalar(value)
+			if scalar is not None:
+				values[field] = scalar
+
+	for field in _DOC_META_FIELDS:
+		values.pop(field, None)
+
+	return {"doctype": target, "values": values}
+
+
+_DOC_META_FIELDS = ("name", "owner", "creation", "modified", "modified_by", "docstatus", "idx", "doctype")
+_CHILD_META_FIELDS = ("name", "owner", "creation", "modified", "modified_by", "docstatus", "idx", "parent",
+	"parentfield", "parenttype", "doctype")
 
 
 @frappe.whitelist()
@@ -2145,7 +2356,6 @@ _NOTIFICATION_SOURCES = (
 	("Purchase Invoice", "Unpaid bills", ("Unpaid", "Partly Paid"), "orange"),
 	("Sales Order", "Orders to deliver", ("To Deliver", "To Deliver and Bill"), "amber"),
 	("Purchase Order", "Orders to receive", ("To Receive", "To Receive and Bill"), "amber"),
-	("Material Request", "Requests pending", ("Pending",), "blue"),
 )
 
 

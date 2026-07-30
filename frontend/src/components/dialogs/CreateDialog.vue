@@ -1,5 +1,5 @@
 <template>
-  <Dialog v-model="show" :options="{ title: config?.title || 'New', size: config?.child ? '3xl' : 'lg' }">
+  <Dialog v-model="show" :options="{ title: config?.title || 'New', size: config?.child ? '5xl' : 'lg' }">
     <template #body-content>
       <div v-if="config" class="space-y-4">
         <div v-for="(group, gi) in groups" :key="group.title || gi" class="space-y-3">
@@ -77,6 +77,8 @@
           :doctype="config.doctype"
           :party="partyValue"
           :company="values.company || ''"
+          :warehouse="values.set_warehouse || values.warehouse || ''"
+          :currency="values.currency || ''"
           @update:modelValue="(v) => (values[config.child.fieldname] = v)"
         />
 
@@ -101,7 +103,12 @@ import ItemsTable from '@/components/ItemsTable.vue'
 import { getDefaults } from '@/data/defaults.js'
 
 const show = defineModel()
-const props = defineProps({ config: Object })
+const props = defineProps({
+  config: Object,
+  // Values mapped from a source document ("Create Sales Invoice" off an order).
+  // They land on top of the defaults, so the form opens ready to review.
+  prefill: { type: Object, default: null },
+})
 const emit = defineEmits(['created'])
 
 const values = reactive({})
@@ -110,12 +117,16 @@ const error = ref('')
 const loading = ref(false)
 // Which of the declared fields this site actually has, and what the site calls them.
 const fieldMeta = ref(null)
+// Mandatory fields this site has that the app does not declare — a live site adds its
+// own (bill of lading, vehicle, commission) and the document will not submit without
+// them, so the form has to ask.
+const requiredFields = ref([])
 
 // A field survives when the doctype really has it. Some of the fields the forms ask
 // for are site customisations (a verification status, the KYC attachments), and a
 // form that showed them on a site without them would collect values nothing reads.
 const visibleFields = computed(() => {
-  const declared = props.config?.fields || []
+  const declared = [...(props.config?.fields || []), ...requiredFields.value]
   if (!fieldMeta.value) return declared
   return declared
     .filter((f) => f.virtual || (fieldMeta.value[f.fieldname] && !fieldMeta.value[f.fieldname].read_only))
@@ -156,6 +167,20 @@ function today() {
 
 const SPECIAL = ['company', 'warehouse', 'selling_price_list', 'buying_price_list']
 
+async function loadRequiredFields() {
+  requiredFields.value = []
+  if (!props.config?.doctype) return
+  try {
+    const extra = await call('kamil.api.get_missing_mandatory_fields', {
+      doctype: props.config.doctype,
+      known: JSON.stringify((props.config.fields || []).map((f) => f.fieldname)),
+    })
+    requiredFields.value = (extra || []).map((f) => ({ ...f, section: 'Required', virtual: true }))
+  } catch (e) {
+    requiredFields.value = []
+  }
+}
+
 async function loadFieldMeta() {
   fieldMeta.value = null
   const fields = props.config?.fields || []
@@ -176,6 +201,7 @@ async function reset() {
   error.value = ''
   if (!props.config) return
   loadFieldMeta()
+  loadRequiredFields()
   const d = (await getDefaults()) || {}
   for (const f of props.config.fields || []) {
     if (f.default === 'today') values[f.fieldname] = today()
@@ -183,11 +209,23 @@ async function reset() {
     else if (f.default !== undefined) values[f.fieldname] = f.default
   }
   if (props.config.child) values[props.config.child.fieldname] = [{}]
+
+  for (const [field, value] of Object.entries(props.prefill || {})) {
+    if (value === null || value === undefined || value === '') continue
+    values[field] = value
+  }
+  // A mapped document brings its own lines; an empty starter row would be noise.
+  const childField = props.config.child?.fieldname
+  if (childField && Array.isArray(props.prefill?.[childField]) && props.prefill[childField].length) {
+    values[childField] = props.prefill[childField].map((row) => ({ ...row }))
+  }
 }
 
-watch(show, (v) => {
-  if (v) reset()
-})
+// `immediate` matters: a dialog rendered with v-if mounts with `show` already true,
+// and a plain watcher would never fire — leaving the form blank instead of prefilled.
+watch(show, (v) => v && reset(), { immediate: true })
+// A second "Create from" while this dialog is still mounted brings new values.
+watch(() => props.prefill, () => show.value && reset())
 
 function clean() {
   const out = {}
@@ -204,6 +242,13 @@ function clean() {
 
 async function create() {
   error.value = ''
+  const missing = visibleFields.value.filter(
+    (f) => f.reqd && f.fieldtype !== 'check' && !values[f.fieldname],
+  )
+  if (missing.length) {
+    error.value = `Please fill in: ${missing.map((f) => f.label).join(', ')}`
+    return
+  }
   loading.value = true
   try {
     // A doctype can name its own creator when one record is not the whole story —
