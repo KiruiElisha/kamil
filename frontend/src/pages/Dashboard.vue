@@ -195,6 +195,7 @@ import RecentList from '@/components/RecentList.vue'
 import RankList from '@/components/RankList.vue'
 import StatCard from '@/components/StatCard.vue'
 import Skeleton from '@/components/Skeleton.vue'
+import { defaultCurrency } from '@/utils/money.js'
 
 const tab = ref(0)
 const tabs = [
@@ -301,7 +302,7 @@ function donut(rows, title) {
 
 function fmtMoney(v, c) {
   try {
-    return new Intl.NumberFormat('en-KE', { style: 'currency', currency: c || 'KES', maximumFractionDigits: 0 }).format(v || 0)
+    return new Intl.NumberFormat('en-KE', { style: 'currency', currency: c || defaultCurrency(), maximumFractionDigits: 0 }).format(v || 0)
   } catch {
     return v
   }

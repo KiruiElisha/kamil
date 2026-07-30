@@ -209,15 +209,20 @@ CUSTOMER_WORKFLOW = "Kamil Customer Approval"
 
 # Customer is not submittable, so every state stays at docstatus 0 and the workflow
 # only drives `workflow_state` plus who may edit.
+# Two steps and no more: a customer is submitted for approval, then approved. There is
+# no separate verification stage afterwards — approving *is* the verification, and the
+# KYC status is set from the paperwork itself (see kamil/customer.py).
 CUSTOMER_STATES = [
 	{"state": "Draft", "doc_status": "0", "allow_edit": "Sales User", "style": "Warning"},
 	{"state": "Pending Approval", "doc_status": "0", "allow_edit": "Sales Manager", "style": "Warning"},
 	{"state": "Approved", "doc_status": "0", "allow_edit": "Accounts Manager", "style": "Success"},
-	{"state": "Rejected", "doc_status": "0", "allow_edit": "Sales Manager", "style": "Danger"},
+	{"state": "Rejected", "doc_status": "0", "allow_edit": "Sales User", "style": "Danger"},
 ]
 
 CUSTOMER_TRANSITIONS = [
+	# Step 1 — the salesperson sends it up
 	{"state": "Draft", "action": "Submit for Approval", "next_state": "Pending Approval", "allowed": "Sales User"},
+	# Step 2 — and it is approved (or sent back)
 	{"state": "Pending Approval", "action": "Approve", "next_state": "Approved", "allowed": "Accounts Manager"},
 	{"state": "Pending Approval", "action": "Reject", "next_state": "Rejected", "allowed": "Accounts Manager"},
 	{"state": "Rejected", "action": "Resubmit", "next_state": "Pending Approval", "allowed": "Sales User"},
@@ -399,6 +404,74 @@ def hide_vehicle_fields() -> None:
 
 
 # ---------------------------------------------------------------------------
+# WhatsApp notification channel
+# ---------------------------------------------------------------------------
+
+
+def add_whatsapp_notification_channel() -> None:
+	"""Offer WhatsApp alongside Email/SMS on the Notification doctype.
+
+	The sending half lives in kamil/notification.py; this only makes the option
+	selectable. Written as a property setter so Frappe's own field definition is left
+	alone, and re-derived from the current options each time in case Frappe adds a
+	channel of its own.
+	"""
+	if not frappe.db.exists("DocType", "Notification"):
+		return
+
+	from frappe.custom.doctype.property_setter.property_setter import make_property_setter
+
+	options = (frappe.get_meta("Notification").get_field("channel") or {}).get("options") or ""
+	channels = [c.strip() for c in options.split("\n") if c.strip()]
+	if "WhatsApp" in channels:
+		return
+
+	channels.append("WhatsApp")
+	make_property_setter(
+		"Notification", "channel", "options", "\n".join(channels), "Text", validate_fields_for_doctype=False
+	)
+
+
+# ---------------------------------------------------------------------------
+# Payment approval role
+# ---------------------------------------------------------------------------
+
+PAYMENT_APPROVER_ROLE = "Payment Approver"
+
+
+def create_payment_approver_role() -> None:
+	"""A role whose only job is approving payment requests.
+
+	Approving used to fall to anyone with Accounts User or Accounts Manager, which is
+	far wider than the people actually allowed to release money. The role is created
+	empty; the one person configured in Kamil Settings gets it automatically so the
+	flow keeps working, and anyone else is granted it deliberately.
+	"""
+	if not frappe.db.exists("Role", PAYMENT_APPROVER_ROLE):
+		frappe.get_doc(
+			{
+				"doctype": "Role",
+				"role_name": PAYMENT_APPROVER_ROLE,
+				"desk_access": 1,
+				"is_custom": 1,
+			}
+		).insert(ignore_permissions=True)
+
+	# Whoever payment requests are sent to should be able to act on them.
+	approver = None
+	if frappe.db.exists("DocType", "Kamil Settings"):
+		approver = frappe.db.get_single_value("Kamil Settings", "payment_approver")
+	if not approver or not frappe.db.exists("User", approver):
+		return
+
+	has_role = frappe.db.exists("Has Role", {"parent": approver, "role": PAYMENT_APPROVER_ROLE})
+	if not has_role:
+		user = frappe.get_doc("User", approver)
+		user.append("roles", {"role": PAYMENT_APPROVER_ROLE})
+		user.save(ignore_permissions=True)
+
+
+# ---------------------------------------------------------------------------
 # Desk workspace
 # ---------------------------------------------------------------------------
 
@@ -474,6 +547,8 @@ def setup_kamil() -> None:
 	create_custom_fields()
 	create_customer_workflow()
 	create_purchase_workflow()
+	create_payment_approver_role()
+	add_whatsapp_notification_channel()
 	hide_vehicle_fields()
 	create_workspace()
 	frappe.db.commit()

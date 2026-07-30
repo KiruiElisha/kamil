@@ -256,13 +256,17 @@ def get_user(name: str) -> dict:
 
 @frappe.whitelist()
 def list_assignable_roles() -> list:
-	"""Roles that can be handed out — excludes the built-in pseudo roles."""
+	"""Roles that can be handed out — excludes the built-in pseudo roles.
+
+	Custom roles are included: the app ships one of its own (Payment Approver), and a
+	screen that hides half the roles on the site cannot be used to administer it.
+	"""
 	if not frappe.has_permission("Role", "read"):
 		return []
 
 	rows = frappe.get_list(
 		"Role",
-		filters={"disabled": 0, "is_custom": 0},
+		filters={"disabled": 0},
 		fields=["name"],
 		order_by="name asc",
 		limit_page_length=0,

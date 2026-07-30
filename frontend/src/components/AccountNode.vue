@@ -72,13 +72,14 @@ import { Badge } from 'frappe-ui'
 import ChevronRight from '~icons/lucide/chevron-right'
 import Folder from '~icons/lucide/folder'
 import FileText from '~icons/lucide/file-text'
+import { defaultCurrency } from '@/utils/money.js'
 
 const props = defineProps({
   node: { type: Object, required: true },
   depth: { type: Number, default: 0 },
   expanded: { type: Set, required: true },
   balances: { type: Object, default: () => ({}) },
-  currency: { type: String, default: 'KES' },
+  currency: { type: String, default: '' },
   canWrite: { type: Boolean, default: false },
   canCreate: { type: Boolean, default: false },
 })
@@ -91,7 +92,7 @@ const balance = computed(() => props.balances[props.node.name])
 function money(v) {
   if (v === null || v === undefined) return ''
   try {
-    return new Intl.NumberFormat('en-KE', { style: 'currency', currency: props.currency || 'KES', maximumFractionDigits: 0 }).format(v)
+    return new Intl.NumberFormat('en-KE', { style: 'currency', currency: props.currency || defaultCurrency(), maximumFractionDigits: 0 }).format(v)
   } catch {
     return v
   }

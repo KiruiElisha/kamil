@@ -46,6 +46,7 @@ import Columns from '~icons/lucide/columns'
 import ReportTable from '@/components/ReportTable.vue'
 import { useReportColumns } from '@/composables/useReportColumns'
 import { csvFor, downloadBlob } from '@/utils/reportFormat.js'
+import { defaultCurrency } from '@/utils/money.js'
 
 const props = defineProps({
   doctype: { type: String, required: true },
@@ -57,7 +58,7 @@ const router = useRouter()
 const columns = ref([])
 const rows = ref([])
 const totals = ref({})
-const currency = ref('KES')
+const currency = ref('')
 const truncated = ref(false)
 const loading = ref(false)
 const error = ref('')
@@ -82,7 +83,7 @@ async function load() {
     columns.value = res?.columns || []
     rows.value = res?.rows || []
     totals.value = res?.totals || {}
-    currency.value = res?.currency || 'KES'
+    currency.value = res?.currency || defaultCurrency()
     truncated.value = !!res?.truncated
   } catch (e) {
     error.value = e?.messages?.join(', ') || e?.message || 'Could not build this report.'

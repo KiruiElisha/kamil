@@ -190,6 +190,7 @@ import MessageCircle from '~icons/lucide/message-circle'
 import Skeleton from '@/components/Skeleton.vue'
 import ComboField from '@/components/ComboField.vue'
 import { statusTheme } from '@/utils/status.js'
+import { defaultCurrency } from '@/utils/money.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -396,7 +397,7 @@ function openDesk() {
 function money(v, currency) {
   if (v === null || v === undefined) return ''
   try {
-    return new Intl.NumberFormat('en-KE', { style: 'currency', currency: currency || 'KES', maximumFractionDigits: 2 }).format(v)
+    return new Intl.NumberFormat('en-KE', { style: 'currency', currency: currency || defaultCurrency(), maximumFractionDigits: 2 }).format(v)
   } catch {
     return v
   }

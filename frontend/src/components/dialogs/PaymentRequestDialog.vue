@@ -7,14 +7,8 @@
         <!-- Against an existing invoice -->
         <div v-if="tab === 0" class="space-y-3">
           <ComboField
-            label="Pay against"
-            :options="refTypeOptions"
-            :modelValue="refType"
-            @update:modelValue="onRefTypeChange"
-          />
-          <ComboField
-            label="Invoice"
-            placeholder="Pick an invoice with something outstanding"
+            label="Supplier invoice"
+            placeholder="Pick an invoice with something outstanding (newest first)"
             :options="payableOptions"
             :modelValue="form.reference_name"
             @update:modelValue="onInvoiceChange"
@@ -118,6 +112,7 @@ import { ref, reactive, computed, watch } from 'vue'
 import { Dialog, Button, FormControl, ErrorMessage, Tabs, call } from 'frappe-ui'
 import ComboField from '@/components/ComboField.vue'
 import LinkField from '@/components/LinkField.vue'
+import { defaultCurrency } from '@/utils/money.js'
 
 const show = defineModel()
 const emit = defineEmits(['created'])
@@ -125,10 +120,8 @@ const emit = defineEmits(['created'])
 const tabs = [{ label: 'Against invoice' }, { label: 'Direct expense' }, { label: 'Internal transfer' }]
 const tab = ref(0)
 
-const refTypeOptions = [
-  { label: 'Purchase Invoice (we pay)', value: 'Purchase Invoice' },
-  { label: 'Sales Invoice (customer pays)', value: 'Sales Invoice' },
-]
+// A payment request is how the company asks to pay someone. Money coming in from a
+// customer is recorded against the sales invoice instead, so there is nothing to pick.
 const refType = ref('Purchase Invoice')
 
 const saving = ref(false)
@@ -237,12 +230,6 @@ watch(show, (v) => {
   loadApprovers()
 })
 
-function onRefTypeChange(v) {
-  refType.value = v || 'Purchase Invoice'
-  form.reference_name = ''
-  form.amount = null
-  loadPayables()
-}
 
 // Default the amount to whatever is still outstanding — the common case.
 function onInvoiceChange(v) {
@@ -254,7 +241,7 @@ function onInvoiceChange(v) {
 function money(v, currency) {
   if (v === null || v === undefined) return ''
   try {
-    return new Intl.NumberFormat('en-KE', { style: 'currency', currency: currency || 'KES', maximumFractionDigits: 2 }).format(v)
+    return new Intl.NumberFormat('en-KE', { style: 'currency', currency: currency || defaultCurrency(), maximumFractionDigits: 2 }).format(v)
   } catch {
     return v
   }

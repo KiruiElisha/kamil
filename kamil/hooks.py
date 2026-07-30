@@ -137,13 +137,13 @@ after_migrate = "kamil.setup.after_migrate"
 # ---------------
 # Hook on document methods and events
 
-# doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
-# 	}
-# }
+# Verification is derived from the paperwork on file rather than being a step somebody
+# performs — see kamil/customer.py.
+doc_events = {
+	"Customer": {
+		"validate": "kamil.customer.set_verification_status",
+	},
+}
 
 # Scheduled Tasks
 # ---------------
@@ -175,9 +175,11 @@ after_migrate = "kamil.setup.after_migrate"
 # ------------------------------
 #
 # Specify custom mixins to extend the standard doctype controller.
-# extend_doctype_class = {
-# 	"Task": "kamil.custom.task.CustomTaskMixin"
-# }
+# Frappe dispatches notifications with a hard-coded if/elif over its channels, so a new
+# one has to be added by extending the controller (see kamil/notification.py).
+extend_doctype_class = {
+	"Notification": ["kamil.notification.KamilNotificationMixin"],
+}
 
 # Overriding Methods
 # ------------------------------

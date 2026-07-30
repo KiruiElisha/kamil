@@ -18,7 +18,13 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt, get_url, nowdate
 
-APPROVE_ROLES = ("Accounts Manager", "Accounts User", "System Manager")
+# Approving a payment is its own responsibility, not a side effect of holding a broad
+# accounting role: a bookkeeper who may post entries is not necessarily the person who
+# may release money. The dedicated role is created by kamil/setup.py. System Manager
+# stays so a site can never end up with nobody able to approve — and so whoever
+# administers the site can grant the role in the first place.
+PAYMENT_APPROVER_ROLE = "Payment Approver"
+APPROVE_ROLES = (PAYMENT_APPROVER_ROLE, "System Manager")
 
 
 def _can_approve() -> bool:
@@ -865,7 +871,9 @@ def list_payable_documents(reference_doctype: str = "Purchase Invoice") -> list:
 		reference_doctype,
 		filters={"docstatus": 1, "outstanding_amount": (">", 0)},
 		fields=["name", party_field, "outstanding_amount", "currency", "company"],
-		order_by="posting_date desc",
+		# Newest first: the invoice somebody wants to pay is almost always a recent one,
+		# and creation breaks ties within a posting date.
+		order_by="posting_date desc, creation desc",
 		limit_page_length=100,
 	)
 	return [

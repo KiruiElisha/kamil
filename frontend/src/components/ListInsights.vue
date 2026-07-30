@@ -49,6 +49,7 @@ import Users from '~icons/lucide/users'
 import Skeleton from '@/components/Skeleton.vue'
 import RankList from '@/components/RankList.vue'
 import StatCard from '@/components/StatCard.vue'
+import { defaultCurrency } from '@/utils/money.js'
 
 const props = defineProps({ doctype: { type: String, required: true }, title: String })
 
@@ -59,7 +60,7 @@ onMounted(async () => {
   try {
     data.value = await call('kamil.api.get_list_analytics', { doctype: props.doctype })
   } catch (e) {
-    data.value = { currency: 'KES', kpis: [], status: [], top_parties: [], monthly: [], party_type: '' }
+    data.value = { currency: defaultCurrency(), kpis: [], status: [], top_parties: [], monthly: [], party_type: '' }
   } finally {
     loading.value = false
   }
@@ -67,7 +68,7 @@ onMounted(async () => {
 
 function kval(k) {
   return k.money
-    ? new Intl.NumberFormat('en-KE', { style: 'currency', currency: data.value.currency || 'KES', maximumFractionDigits: 0 }).format(k.value || 0)
+    ? new Intl.NumberFormat('en-KE', { style: 'currency', currency: data.value.currency || defaultCurrency(), maximumFractionDigits: 0 }).format(k.value || 0)
     : new Intl.NumberFormat('en-KE').format(k.value || 0)
 }
 

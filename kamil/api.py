@@ -992,7 +992,7 @@ def get_create_defaults() -> dict:
 	except Exception:
 		warehouse = None
 
-	return {"company": company, "warehouse": warehouse}
+	return {"company": company, "warehouse": warehouse, "currency": _currency_for(company)}
 
 
 @frappe.whitelist()

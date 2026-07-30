@@ -74,6 +74,7 @@ import { useIsMobile } from '@/composables/useIsMobile'
 import { haptic } from '@/utils/haptics'
 import { findList } from '@/data/doctypes.js'
 import DocViewDialog from '@/components/dialogs/DocViewDialog.vue'
+import { defaultCurrency } from '@/utils/money.js'
 
 const props = defineProps({
   title: String,
@@ -110,7 +111,7 @@ function open(row) {
 }
 function money(v, c) {
   try {
-    return new Intl.NumberFormat('en-KE', { style: 'currency', currency: c || 'KES', maximumFractionDigits: 0 }).format(v || 0)
+    return new Intl.NumberFormat('en-KE', { style: 'currency', currency: c || defaultCurrency(), maximumFractionDigits: 0 }).format(v || 0)
   } catch {
     return v
   }

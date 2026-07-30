@@ -162,6 +162,7 @@ import ComboField from '@/components/ComboField.vue'
 import StatCard from '@/components/StatCard.vue'
 import { haptic } from '@/utils/haptics'
 import { statusTheme, docstatusBadge, kindTheme } from '@/utils/status.js'
+import { defaultCurrency } from '@/utils/money.js'
 
 const props = defineProps({
   title: { type: String, required: true },
@@ -190,12 +191,12 @@ const transfer = ref({ config: null, values: null })
 const isMobile = useIsMobile()
 
 const kpis = ref([])
-const kpiCurrency = ref('KES')
+const kpiCurrency = ref('')
 async function loadKpis() {
   try {
     const r = await call('kamil.api.get_list_kpis', { doctype: props.doctype })
     kpis.value = r?.kpis || []
-    kpiCurrency.value = r?.currency || 'KES'
+    kpiCurrency.value = r?.currency || defaultCurrency()
   } catch (e) {
     kpis.value = []
   }
@@ -362,7 +363,7 @@ function openDoc(row) {
 function fmtCurrency(v, currency) {
   if (v === null || v === undefined) return ''
   try {
-    return new Intl.NumberFormat('en-KE', { style: 'currency', currency: currency || 'KES', maximumFractionDigits: 0 }).format(v)
+    return new Intl.NumberFormat('en-KE', { style: 'currency', currency: currency || defaultCurrency(), maximumFractionDigits: 0 }).format(v)
   } catch {
     return v
   }

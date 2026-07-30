@@ -41,6 +41,7 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { Dialog, Button, FormControl, ErrorMessage, Combobox, call } from 'frappe-ui'
 import ComboField from '@/components/ComboField.vue'
+import { defaultCurrency } from '@/utils/money.js'
 
 const show = defineModel()
 const emit = defineEmits(['created'])
@@ -113,7 +114,7 @@ async function create() {
 
 function money(v, c) {
   try {
-    return new Intl.NumberFormat('en-KE', { style: 'currency', currency: c || 'KES', maximumFractionDigits: 0 }).format(v || 0)
+    return new Intl.NumberFormat('en-KE', { style: 'currency', currency: c || defaultCurrency(), maximumFractionDigits: 0 }).format(v || 0)
   } catch {
     return v
   }

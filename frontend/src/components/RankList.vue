@@ -32,11 +32,12 @@
 <script setup>
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
+import { defaultCurrency } from '@/utils/money.js'
 
 const props = defineProps({
   title: String,
   rows: { type: Array, default: () => [] },
-  currency: { type: String, default: 'KES' },
+  currency: { type: String, default: '' },
   money: { type: Boolean, default: true },
   barClass: { type: String, default: 'bg-blue-500' },
   partyType: { type: String, default: '' },
@@ -67,7 +68,7 @@ function pct(v) {
 }
 function fmtMoney(v) {
   try {
-    return new Intl.NumberFormat('en-KE', { style: 'currency', currency: props.currency || 'KES', maximumFractionDigits: 0 }).format(v || 0)
+    return new Intl.NumberFormat('en-KE', { style: 'currency', currency: props.currency || defaultCurrency(), maximumFractionDigits: 0 }).format(v || 0)
   } catch {
     return v
   }

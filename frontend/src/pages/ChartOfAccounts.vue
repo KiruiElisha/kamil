@@ -97,6 +97,7 @@ import Network from '~icons/lucide/network'
 import Skeleton from '@/components/Skeleton.vue'
 import AccountNode from '@/components/AccountNode.vue'
 import AccountDialog from '@/components/dialogs/AccountDialog.vue'
+import { defaultCurrency } from '@/utils/money.js'
 
 const tabs = [
   { label: 'Tree', icon: Network },
@@ -109,7 +110,7 @@ const error = ref('')
 const tree = ref([])
 const flat = ref([])
 const balances = ref({})
-const currency = ref('KES')
+const currency = ref('')
 const canCreate = ref(false)
 const canWrite = ref(false)
 const showDisabled = ref(false)
@@ -192,7 +193,7 @@ function rootTheme(root) {
 function money(v) {
   if (v === null || v === undefined) return ''
   try {
-    return new Intl.NumberFormat('en-KE', { style: 'currency', currency: currency.value || 'KES', maximumFractionDigits: 0 }).format(v)
+    return new Intl.NumberFormat('en-KE', { style: 'currency', currency: currency.value || defaultCurrency(), maximumFractionDigits: 0 }).format(v)
   } catch {
     return v
   }

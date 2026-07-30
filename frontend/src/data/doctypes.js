@@ -15,6 +15,8 @@ import Send from '~icons/lucide/send'
 import Users from '~icons/lucide/users'
 import Factory from '~icons/lucide/factory'
 import Car from '~icons/lucide/car'
+import IdCard from '~icons/lucide/id-card'
+import UserCheck from '~icons/lucide/user-check'
 
 export const SECTIONS = ['Selling', 'Buying', 'Inventory', 'Accounts', 'Masters']
 
@@ -195,6 +197,64 @@ LISTS.push(
   // Fleet. Vehicle is named after its license plate, so `name` is the plate itself.
   // Fuel, mileage and valuation are not tracked here — they belong on the transport
   // documents — so those fields are hidden on the doctype too (see kamil/setup.py).
+  // People. Employees and sales people are masters the fleet and selling flows point at.
+  { key: 'employee', section: 'Masters', title: 'Employees', doctype: 'Employee', icon: IdCard, orderBy: 'modified desc', currencyField: '',
+    view: [
+      { label: 'ID', field: 'name' },
+      { label: 'Name', field: 'employee_name' },
+      { label: 'Designation', field: 'designation' },
+      { label: 'Department', field: 'department' },
+      { label: 'Branch', field: 'branch' },
+      { label: 'Company', field: 'company' },
+      { label: 'Mobile', field: 'cell_number' },
+      { label: 'Email', field: 'personal_email' },
+      { label: 'Joined', field: 'date_of_joining', type: 'date' },
+      { label: 'Status', field: 'status', type: 'status' },
+    ],
+    columns: [
+      { label: 'ID', field: 'name' },
+      { label: 'Name', field: 'employee_name' },
+      { label: 'Designation', field: 'designation' },
+      { label: 'Status', field: 'status', type: 'status' },
+      { label: 'Modified', field: 'modified', type: 'ago' },
+    ],
+    create: { doctype: 'Employee', title: 'New Employee', label: 'Employee',
+      fields: [
+        { section: 'Employee', fieldname: 'first_name', label: 'First Name', fieldtype: 'data' },
+        { section: 'Employee', fieldname: 'last_name', label: 'Last Name', fieldtype: 'data' },
+        { section: 'Employee', fieldname: 'gender', label: 'Gender', fieldtype: 'link', options: 'Gender' },
+        { section: 'Employee', fieldname: 'date_of_birth', label: 'Date of Birth', fieldtype: 'date' },
+        { section: 'Employee', fieldname: 'date_of_joining', label: 'Date of Joining', fieldtype: 'date', default: 'today' },
+        { section: 'Employment', fieldname: 'designation', label: 'Designation', fieldtype: 'link', options: 'Designation' },
+        { section: 'Employment', fieldname: 'department', label: 'Department', fieldtype: 'link', options: 'Department' },
+        { section: 'Employment', fieldname: 'branch', label: 'Branch', fieldtype: 'link', options: 'Branch' },
+        { section: 'Employment', fieldname: 'employment_type', label: 'Employment Type', fieldtype: 'link', options: 'Employment Type' },
+        COMPANY,
+        { section: 'Contact', fieldname: 'cell_number', label: 'Mobile', fieldtype: 'data' },
+        { section: 'Contact', fieldname: 'personal_email', label: 'Email', fieldtype: 'data' },
+      ] } },
+  { key: 'sales-person', section: 'Masters', title: 'Sales People', doctype: 'Sales Person', icon: UserCheck, orderBy: 'modified desc', currencyField: '',
+    view: [
+      { label: 'Sales Person', field: 'name' },
+      { label: 'Employee', field: 'employee' },
+      { label: 'Parent', field: 'parent_sales_person' },
+      { label: 'Commission Rate', field: 'commission_rate' },
+      { label: 'Group', field: 'is_group', type: 'kind' },
+      { label: 'Enabled', field: 'enabled', type: 'kind' },
+    ],
+    columns: [
+      { label: 'Sales Person', field: 'name' },
+      { label: 'Employee', field: 'employee' },
+      { label: 'Commission Rate', field: 'commission_rate' },
+      { label: 'Modified', field: 'modified', type: 'ago' },
+    ],
+    create: { doctype: 'Sales Person', title: 'New Sales Person', label: 'Sales Person',
+      fields: [
+        { fieldname: 'sales_person_name', label: 'Sales Person Name', fieldtype: 'data' },
+        { fieldname: 'parent_sales_person', label: 'Reports To', fieldtype: 'link', options: 'Sales Person', filters: { is_group: 1 } },
+        { fieldname: 'employee', label: 'Employee', fieldtype: 'link', options: 'Employee' },
+        { fieldname: 'commission_rate', label: 'Commission Rate (%)', fieldtype: 'float' },
+      ] } },
   { key: 'vehicle', section: 'Masters', title: 'Vehicles', doctype: 'Vehicle', icon: Car, orderBy: 'modified desc', currencyField: '',
     view: [
       { label: 'License Plate', field: 'name' },

@@ -99,6 +99,7 @@ import { useReportColumns } from '@/composables/useReportColumns'
 import { csvFor, downloadBlob } from '@/utils/reportFormat.js'
 import { findReport } from '@/data/reports.js'
 import { useRoute, useRouter } from 'vue-router'
+import { defaultCurrency } from '@/utils/money.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -124,7 +125,7 @@ function clearDrill() {
 const values = reactive({})
 const columns = ref([])
 const rows = ref([])
-const currency = ref('KES')
+const currency = ref('')
 const truncated = ref(false)
 const loading = ref(false)
 const error = ref('')
@@ -255,7 +256,7 @@ async function run() {
     })
     columns.value = res?.columns || []
     rows.value = res?.rows || []
-    currency.value = res?.currency || 'KES'
+    currency.value = res?.currency || defaultCurrency()
     truncated.value = !!res?.truncated
   } catch (e) {
     // Frappe's messages carry markup ("… for <strong>Acme</strong>"), which would

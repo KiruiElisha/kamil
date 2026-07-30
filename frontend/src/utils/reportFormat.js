@@ -1,3 +1,4 @@
+import { defaultCurrency } from './money.js'
 // Formatting shared by every tabular report in the app — the query reports under
 // /report/:key and the Report tab of each list view — so a currency, a date or a
 // negative number looks the same wherever it is shown.
@@ -38,7 +39,7 @@ export function formatValue(value, column, currency) {
     try {
       return new Intl.NumberFormat('en-KE', {
         style: 'currency',
-        currency: currency || 'KES',
+        currency: currency || defaultCurrency(),
         maximumFractionDigits: 0,
       }).format(value)
     } catch {

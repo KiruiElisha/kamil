@@ -342,6 +342,7 @@ import ComboField from '@/components/ComboField.vue'
 import LinkField from '@/components/LinkField.vue'
 import { findList } from '@/data/doctypes.js'
 import { statusTheme, kindTheme, docstatusBadge } from '@/utils/status.js'
+import { defaultCurrency } from '@/utils/money.js'
 
 const router = useRouter()
 const show = defineModel()
@@ -811,7 +812,7 @@ async function sendWhatsApp() {
 function money(v, c) {
   if (v === null || v === undefined) return ''
   try {
-    return new Intl.NumberFormat('en-KE', { style: 'currency', currency: c || 'KES', maximumFractionDigits: 0 }).format(v)
+    return new Intl.NumberFormat('en-KE', { style: 'currency', currency: c || defaultCurrency(), maximumFractionDigits: 0 }).format(v)
   } catch {
     return v
   }

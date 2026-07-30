@@ -86,11 +86,12 @@ import { Badge } from 'frappe-ui'
 import Skeleton from '@/components/Skeleton.vue'
 import { statusTheme } from '@/utils/status.js'
 import { formatValue, isNumeric, isTotalRow, isGroupRow, linkTarget } from '@/utils/reportFormat.js'
+import { defaultCurrency } from '@/utils/money.js'
 
 const props = defineProps({
   columns: { type: Array, default: () => [] },
   rows: { type: Array, default: () => [] },
-  currency: { type: String, default: 'KES' },
+  currency: { type: String, default: '' },
   totals: { type: Object, default: () => ({}) },
   loading: { type: Boolean, default: false },
   error: { type: String, default: '' },
