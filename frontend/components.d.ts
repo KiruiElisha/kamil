@@ -21,6 +21,7 @@ declare module 'vue' {
     LinkField: typeof import('./src/components/LinkField.vue')['default']
     ListInsights: typeof import('./src/components/ListInsights.vue')['default']
     ListReport: typeof import('./src/components/ListReport.vue')['default']
+    ListReportTab: typeof import('./src/components/ListReportTab.vue')['default']
     NotificationBell: typeof import('./src/components/NotificationBell.vue')['default']
     PaymentDialog: typeof import('./src/components/dialogs/PaymentDialog.vue')['default']
     PaymentRequestDialog: typeof import('./src/components/dialogs/PaymentRequestDialog.vue')['default']

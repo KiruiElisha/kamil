@@ -97,7 +97,7 @@ import LinkField from '@/components/LinkField.vue'
 import ReportTable from '@/components/ReportTable.vue'
 import { useReportColumns } from '@/composables/useReportColumns'
 import { csvFor, downloadBlob } from '@/utils/reportFormat.js'
-import { findReport } from '@/data/reports.js'
+import { findReport, buildFilters } from '@/data/reports.js'
 import { useRoute, useRouter } from 'vue-router'
 import { defaultCurrency } from '@/utils/money.js'
 
@@ -215,13 +215,16 @@ const { visibleColumns, hiddenCount, columnOptions, showAllColumns } = useReport
 
 // --- running the report -------------------------------------------------------
 function payload() {
-  // Only send what is actually on screen, so a hidden date range cannot fight with
-  // the fiscal year the report was told to use.
-  const active = {}
+  // Only what is on screen, so a hidden date range cannot fight the fiscal year that
+  // was chosen. buildFilters wraps the multi-select ones in a list, which is what
+  // ERPNext's own filters send.
+  const shown = {}
   for (const f of activeFilters.value) {
-    if (values[f.fieldname] !== undefined) active[f.fieldname] = values[f.fieldname]
+    if (values[f.fieldname] !== undefined) shown[f.fieldname] = values[f.fieldname]
   }
-  return JSON.stringify({ ...(cfg.value?.defaults || {}), ...active, ...drillFilter.value })
+  return JSON.stringify(
+    buildFilters({ ...cfg.value, filters: activeFilters.value }, shown, drillFilter.value),
+  )
 }
 
 async function run() {

@@ -217,7 +217,7 @@
           <div v-if="payResult" class="text-sm" :class="payOk ? 'text-green-600' : 'text-red-600'">{{ payResult }}</div>
           <div class="flex flex-wrap justify-end gap-2">
             <Button label="Close" @click="payOpen = false" />
-            <Button variant="solid" label="Record payment" :loading="paySaving" @click="recordPayment" />
+            <Button variant="solid" label="Open payment entry" :loading="paySaving" @click="recordPayment" />
           </div>
         </div>
 
@@ -656,6 +656,108 @@ async function makeNext(target) {
     await load()
   } catch (e) {
     error.value = e?.messages?.join(', ') || e?.message || 'Could not create the document.'
+  }
+}
+
+async function loadModes() {
+  try {
+    modeOptions.value = (await call('kamil.api.list_modes_of_payment')) || []
+  } catch (e) {
+    modeOptions.value = []
+  }
+}
+
+function togglePayment() {
+  payOpen.value = !payOpen.value
+  if (!payOpen.value) return
+  payResult.value = ''
+  payForm.amount = Number(doc.value?.outstanding_amount) || null
+  payForm.reference_no = ''
+  payForm.reference_date = new Date().toISOString().slice(0, 10)
+  if (!modeOptions.value.length) loadModes()
+}
+
+async function recordPayment() {
+  paySaving.value = true
+  payResult.value = ''
+  try {
+    // Map the invoice onto a payment entry and open the form on those values —
+    // nothing posts until the user saves, and they can check the bank account, the
+    // amount and the allocation first.
+    const draft = await call('kamil.api.get_payment_entry_draft', {
+      invoice_type: 'Sales',
+      invoice_name: curName.value,
+      amount: payForm.amount || null,
+      mode_of_payment: payForm.mode_of_payment || null,
+    })
+    const values = { ...(draft?.values || {}) }
+    if (payForm.reference_no) {
+      values.reference_no = payForm.reference_no
+      values.reference_date = payForm.reference_date || new Date().toISOString().slice(0, 10)
+    }
+
+    const cfg = findList('payment-entry')
+    show.value = false
+    emit('create-from', { target: 'Payment Entry', config: cfg.create, values })
+  } catch (e) {
+    payOk.value = false
+    payResult.value = e?.messages?.join(', ') || e?.message || 'Could not prepare the payment.'
+  } finally {
+    paySaving.value = false
+  }
+}
+
+function togglePaymentRequest() {
+  prOpen.value = !prOpen.value
+  if (!prOpen.value) return
+  prResult.value = null
+  prForm.amount = prOutstanding.value || null
+  prForm.mode_of_payment = ''
+  if (!modeOptions.value.length) loadModes()
+}
+
+async function raisePaymentRequest() {
+  prSaving.value = true
+  prResult.value = null
+  try {
+    const created = await call('kamil.payment_flow.create_payment_request', {
+      reference_doctype: curDoctype.value,
+      reference_name: curName.value,
+      amount: prForm.amount || null,
+      mode_of_payment: prForm.mode_of_payment || null,
+      recipient: prForm.recipient || null,
+      phone_number: prForm.phone_number || null,
+    })
+
+    // Sending is separate so a mail failure never loses the request itself.
+    let sent = null
+    if (prForm.via_email || prForm.via_whatsapp) {
+      sent = await call('kamil.payment_flow.send_payment_request', {
+        name: created.name,
+        via_email: prForm.via_email ? 1 : 0,
+        via_whatsapp: prForm.via_whatsapp ? 1 : 0,
+        recipient: prForm.recipient || null,
+        phone_number: prForm.phone_number || null,
+      })
+    }
+
+    const lines = []
+    if (sent?.link) lines.push(`Approval link: ${sent.link}`)
+    if (sent?.email) lines.push(sent.email.sent ? `Emailed to ${sent.email.to}` : `Email not sent — ${sent.email.error}`)
+    if (sent?.whatsapp)
+      lines.push(sent.whatsapp.sent ? `WhatsApp sent to ${sent.whatsapp.to}` : `WhatsApp not sent — ${sent.whatsapp.error}`)
+    if (!lines.length) lines.push('Not sent — share it from the Payment Requests list when you are ready.')
+
+    prResult.value = { ok: true, title: `${created.name} raised and awaiting approval.`, lines }
+    emit('submitted')
+  } catch (e) {
+    prResult.value = {
+      ok: false,
+      title: 'Could not raise the payment request.',
+      lines: [e?.messages?.join(', ') || e?.message || 'Unknown error.'],
+    }
+  } finally {
+    prSaving.value = false
   }
 }
 

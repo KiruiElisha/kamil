@@ -548,6 +548,68 @@ def make_invoice_from_order(order_type: str, order_name: str):
 
 
 @frappe.whitelist()
+def get_payment_entry_draft(
+	invoice_type: str,
+	invoice_name: str,
+	amount: float | str | None = None,
+	mode_of_payment: str | None = None,
+) -> dict:
+	"""Map an invoice onto a Payment Entry and return it **unsaved**.
+
+	Same idea as `get_next_document_draft`: the app opens the payment form on these
+	values so the user sees what they are about to post — the bank account, the
+	allocation, the reference row — instead of a draft appearing silently behind them.
+	"""
+	from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
+
+	dt = "Sales Invoice" if invoice_type == "Sales" else "Purchase Invoice"
+	frappe.has_permission(dt, "read", doc=invoice_name, throw=True)
+	frappe.has_permission("Payment Entry", "create", throw=True)
+
+	account = None
+	if mode_of_payment:
+		from kamil.payment_flow import _mode_of_payment_account
+
+		company = frappe.db.get_value(dt, invoice_name, "company")
+		account = _mode_of_payment_account(mode_of_payment, company)
+
+	pe = get_payment_entry(dt, invoice_name, bank_account=account)
+	if mode_of_payment:
+		pe.mode_of_payment = mode_of_payment
+	if amount:
+		amount = flt(amount)
+		pe.paid_amount = amount
+		pe.received_amount = amount
+		if pe.references:
+			pe.references[0].allocated_amount = amount
+
+	values = {}
+	for field, value in pe.as_dict().items():
+		if value in (None, "") or field.startswith("_"):
+			continue
+		if isinstance(value, list):
+			rows = [
+				{
+					k: _scalar(v)
+					for k, v in _plain_row(row).items()
+					if v not in (None, "") and not k.startswith("_") and k not in _CHILD_META_FIELDS
+				}
+				for row in value
+			]
+			if rows:
+				values[field] = rows
+		else:
+			scalar = _scalar(value)
+			if scalar is not None:
+				values[field] = scalar
+
+	for field in _DOC_META_FIELDS:
+		values.pop(field, None)
+
+	return {"doctype": "Payment Entry", "values": values}
+
+
+@frappe.whitelist()
 def record_payment(
 	invoice_type: str,
 	invoice_name: str,

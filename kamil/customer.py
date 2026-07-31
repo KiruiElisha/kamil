@@ -87,3 +87,21 @@ def get_kyc_status(customer: str) -> dict:
 			{"fieldname": f, "label": frappe.get_meta("Customer").get_label(f)} for f in missing
 		],
 	}
+
+def submit_for_approval(doc, method=None) -> None:
+	"""A new customer goes straight into the approval queue.
+
+	There is no draft stage anybody works in — the salesperson fills the form and it is
+	raised for approval on save — so the workflow's first state is set here rather than
+	waiting for somebody to press a button that only ever had one option.
+	"""
+	if not doc.meta.has_field("workflow_state"):
+		return
+	if doc.get("workflow_state"):
+		return
+
+	from frappe.model.workflow import get_workflow_name
+
+	if not get_workflow_name("Customer"):
+		return
+	doc.workflow_state = "Pending Approval"

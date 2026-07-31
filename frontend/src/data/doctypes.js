@@ -15,10 +15,15 @@ import Send from '~icons/lucide/send'
 import Users from '~icons/lucide/users'
 import Factory from '~icons/lucide/factory'
 import Car from '~icons/lucide/car'
+import Coins from '~icons/lucide/coins'
+import Banknote from '~icons/lucide/banknote'
+import FileSpreadsheet from '~icons/lucide/file-spreadsheet'
+import Layers3 from '~icons/lucide/layers-3'
+import ClipboardCheck from '~icons/lucide/clipboard-check'
 import IdCard from '~icons/lucide/id-card'
 import UserCheck from '~icons/lucide/user-check'
 
-export const SECTIONS = ['Selling', 'Buying', 'Inventory', 'Accounts', 'Masters']
+export const SECTIONS = ['Selling', 'Buying', 'Inventory', 'Accounts', 'Payroll', 'Masters']
 
 const sel = (arr) => arr.map((v) => ({ label: v, value: v }))
 
@@ -70,6 +75,10 @@ export const LISTS = [
         { fieldname: 'update_stock', label: 'Update stock', fieldtype: 'check', default: 1 } ] } },
   // Inventory
   { key: 'item', section: 'Inventory', title: 'Items', doctype: 'Item', icon: Package, orderBy: 'modified desc',
+    reportTabs: [
+      { label: 'Stock Balance', report: 'stock-balance' },
+      { label: 'Stock Ledger', report: 'stock-ledger' },
+    ],
     view: [
       { label: 'Item Code', field: 'name' },
       { label: 'Name', field: 'item_name' },
@@ -109,7 +118,51 @@ export const LISTS = [
       { label: 'Modified', field: 'modified', type: 'ago' },
     ] },
   { key: 'payment-entry', section: 'Accounts', title: 'Payment Entries', doctype: 'Payment Entry', icon: CreditCard, orderBy: 'modified desc', currencyField: 'paid_to_account_currency', special: 'payment',
-    columns: [ { label: 'Payment', field: 'name' }, { label: 'Type', field: 'payment_type', type: 'kind' }, { label: 'Party', field: 'party_name' }, { label: 'Date', field: 'posting_date', type: 'date' }, { label: 'State', field: 'docstatus', type: 'docstatus' }, { label: 'Amount', field: 'paid_amount', type: 'currency' }, { label: 'Modified', field: 'modified', type: 'ago' } ] },
+    columns: [ { label: 'Payment', field: 'name' }, { label: 'Type', field: 'payment_type', type: 'kind' }, { label: 'Party', field: 'party_name' }, { label: 'Date', field: 'posting_date', type: 'date' }, { label: 'State', field: 'docstatus', type: 'docstatus' }, { label: 'Amount', field: 'paid_amount', type: 'currency' }, { label: 'Modified', field: 'modified', type: 'ago' } ],
+    // Used when a payment is raised off an invoice: the mapped values open here.
+    create: { doctype: 'Payment Entry', title: 'Payment Entry', label: 'Payment',
+      fields: [
+        COMPANY,
+        { fieldname: 'payment_type', label: 'Type', fieldtype: 'select', selectOptions: sel(['Receive', 'Pay', 'Internal Transfer']), default: 'Receive' },
+        { fieldname: 'posting_date', label: 'Posting Date', fieldtype: 'date', default: 'today' },
+        { fieldname: 'party_type', label: 'Party Type', fieldtype: 'select', selectOptions: sel(['Customer', 'Supplier']) },
+        { fieldname: 'party', label: 'Party', fieldtype: 'data' },
+        { fieldname: 'paid_from', label: 'Paid From', fieldtype: 'link', options: 'Account', filters: { is_group: 0 } },
+        { fieldname: 'paid_to', label: 'Paid To', fieldtype: 'link', options: 'Account', filters: { is_group: 0 } },
+        { fieldname: 'paid_amount', label: 'Amount', fieldtype: 'currency' },
+        { fieldname: 'received_amount', label: 'Received Amount', fieldtype: 'currency' },
+        { fieldname: 'mode_of_payment', label: 'Mode of Payment', fieldtype: 'link', options: 'Mode of Payment' },
+        { fieldname: 'reference_no', label: 'Reference No', fieldtype: 'data' },
+        { fieldname: 'reference_date', label: 'Reference Date', fieldtype: 'date' },
+      ] } },
+  { key: 'currency-exchange', section: 'Accounts', title: 'Currency Exchange', doctype: 'Currency Exchange', icon: Coins, orderBy: 'modified desc', currencyField: '',
+    view: [
+      { label: 'Rate', field: 'name' },
+      { label: 'Date', field: 'date', type: 'date' },
+      { label: 'From', field: 'from_currency' },
+      { label: 'To', field: 'to_currency' },
+      { label: 'Exchange Rate', field: 'exchange_rate' },
+      { label: 'For Buying', field: 'for_buying', type: 'kind' },
+      { label: 'For Selling', field: 'for_selling', type: 'kind' },
+      { label: 'Modified', field: 'modified', type: 'ago' },
+    ],
+    columns: [
+      { label: 'Rate', field: 'name' },
+      { label: 'Date', field: 'date', type: 'date' },
+      { label: 'From', field: 'from_currency' },
+      { label: 'To', field: 'to_currency' },
+      { label: 'Rate', field: 'exchange_rate' },
+      { label: 'Modified', field: 'modified', type: 'ago' },
+    ],
+    create: { doctype: 'Currency Exchange', title: 'New Exchange Rate', label: 'Rate',
+      fields: [
+        { fieldname: 'date', label: 'Date', fieldtype: 'date', default: 'today' },
+        { fieldname: 'from_currency', label: 'From Currency', fieldtype: 'link', options: 'Currency', default: 'USD' },
+        { fieldname: 'to_currency', label: 'To Currency', fieldtype: 'link', options: 'Currency' },
+        { fieldname: 'exchange_rate', label: 'Exchange Rate', fieldtype: 'float' },
+        { fieldname: 'for_buying', label: 'For Buying', fieldtype: 'check', default: 1 },
+        { fieldname: 'for_selling', label: 'For Selling', fieldtype: 'check', default: 1 },
+      ] } },
   { key: 'journal-entry', section: 'Accounts', title: 'Journal Entries', doctype: 'Journal Entry', icon: BookOpen, orderBy: 'modified desc', currencyField: '',
     columns: [ { label: 'Entry', field: 'name' }, { label: 'Type', field: 'voucher_type', type: 'kind' }, { label: 'Date', field: 'posting_date', type: 'date' }, { label: 'State', field: 'docstatus', type: 'docstatus' }, { label: 'Debit', field: 'total_debit', type: 'currency' }, { label: 'Modified', field: 'modified', type: 'ago' } ],
     create: { doctype: 'Journal Entry', title: 'New Journal Entry', label: 'Journal',
@@ -125,6 +178,12 @@ LISTS.push(
   // details and `custom_verfication_status` (spelling is theirs) all already exist
   // there. The kamil_* compliance fields are the only ones this app adds.
   { key: 'customer', section: 'Masters', title: 'Customers', doctype: 'Customer', icon: Users, orderBy: 'modified desc', currencyField: 'default_currency',
+    // What is owed and the ledger behind it, without leaving the list. Clicking a
+    // party in either opens that customer's general ledger.
+    reportTabs: [
+      { label: 'AR', report: 'ar-summary', partyType: 'Customer' },
+      { label: 'GL', report: 'general-ledger', partyType: 'Customer' },
+    ],
     view: [
       { label: 'Customer', field: 'name' },
       { label: 'Type', field: 'customer_type', type: 'kind' },
@@ -133,7 +192,6 @@ LISTS.push(
       { label: 'Currency', field: 'default_currency' },
       { label: 'Price List', field: 'default_price_list' },
       { label: 'Tax ID', field: 'tax_id' },
-      { label: 'KRA PIN', field: 'kamil_kra_pin' },
       { label: 'License No', field: 'kamil_license_number' },
       { label: 'License Expiry', field: 'kamil_license_expiry', type: 'date' },
       { label: 'Postal Address', field: 'kamil_postal_address' },
@@ -180,7 +238,6 @@ LISTS.push(
         { section: 'Address', fieldname: 'kamil_postal_address', label: 'Postal Address', fieldtype: 'data' },
         // Statutory identity — what the licence and tax checks are done against.
         { section: 'Statutory & KYC', fieldname: 'tax_id', label: 'Tax ID / PIN', fieldtype: 'data' },
-        { section: 'Statutory & KYC', fieldname: 'kamil_kra_pin', label: 'KRA PIN', fieldtype: 'data' },
         { section: 'Statutory & KYC', fieldname: 'kamil_license_number', label: 'License Number', fieldtype: 'data' },
         { section: 'Statutory & KYC', fieldname: 'kamil_license_expiry', label: 'License Expiry', fieldtype: 'date' },
         // Options come from the site: this is a local customisation, not ours.
@@ -198,6 +255,91 @@ LISTS.push(
   // Fuel, mileage and valuation are not tracked here — they belong on the transport
   // documents — so those fields are hidden on the doctype too (see kamil/setup.py).
   // People. Employees and sales people are masters the fleet and selling flows point at.
+  // Payroll. These live in HRMS; on a site without it the permission check hides them.
+  { key: 'payroll-entry', section: 'Payroll', title: 'Payroll Entries', doctype: 'Payroll Entry', icon: Banknote, orderBy: 'modified desc',
+    view: [
+      { label: 'Entry', field: 'name' },
+      { label: 'Company', field: 'company' },
+      { label: 'Start Date', field: 'start_date', type: 'date' },
+      { label: 'End Date', field: 'end_date', type: 'date' },
+      { label: 'Payroll Frequency', field: 'payroll_frequency', type: 'kind' },
+      { label: 'Payment Account', field: 'payment_account' },
+      { label: 'Cost Center', field: 'cost_center' },
+      { label: 'Status', field: 'status', type: 'status' },
+      { label: 'Modified', field: 'modified', type: 'ago' },
+    ],
+    columns: [
+      { label: 'Entry', field: 'name' },
+      { label: 'From', field: 'start_date', type: 'date' },
+      { label: 'To', field: 'end_date', type: 'date' },
+      { label: 'Frequency', field: 'payroll_frequency', type: 'kind' },
+      { label: 'Status', field: 'status', type: 'status' },
+      { label: 'Modified', field: 'modified', type: 'ago' },
+    ],
+    create: { doctype: 'Payroll Entry', title: 'New Payroll Entry', label: 'Payroll Entry',
+      fields: [
+        COMPANY,
+        { fieldname: 'posting_date', label: 'Posting Date', fieldtype: 'date', default: 'today' },
+        { fieldname: 'payroll_frequency', label: 'Frequency', fieldtype: 'select', selectOptions: sel(['Monthly', 'Fortnightly', 'Bimonthly', 'Weekly', 'Daily']), default: 'Monthly' },
+        { fieldname: 'start_date', label: 'Start Date', fieldtype: 'date' },
+        { fieldname: 'end_date', label: 'End Date', fieldtype: 'date' },
+        { fieldname: 'payment_account', label: 'Payment Account', fieldtype: 'link', options: 'Account', filters: { is_group: 0 } },
+        { fieldname: 'cost_center', label: 'Cost Center', fieldtype: 'link', options: 'Cost Center', filters: { is_group: 0 } },
+      ] } },
+  { key: 'salary-slip', section: 'Payroll', title: 'Salary Slips', doctype: 'Salary Slip', icon: FileSpreadsheet, orderBy: 'modified desc', currencyField: 'currency',
+    view: [
+      { label: 'Slip', field: 'name' },
+      { label: 'Employee', field: 'employee_name' },
+      { label: 'Period', field: 'start_date', type: 'date' },
+      { label: 'To', field: 'end_date', type: 'date' },
+      { label: 'Gross Pay', field: 'gross_pay', type: 'currency' },
+      { label: 'Total Deduction', field: 'total_deduction', type: 'currency' },
+      { label: 'Net Pay', field: 'net_pay', type: 'currency' },
+      { label: 'Status', field: 'status', type: 'status' },
+      { label: 'Modified', field: 'modified', type: 'ago' },
+    ],
+    columns: [
+      { label: 'Slip', field: 'name' },
+      { label: 'Employee', field: 'employee_name' },
+      { label: 'Period', field: 'start_date', type: 'date' },
+      { label: 'Net Pay', field: 'net_pay', type: 'currency' },
+      { label: 'Status', field: 'status', type: 'status' },
+      { label: 'Modified', field: 'modified', type: 'ago' },
+    ] },
+  { key: 'salary-structure', section: 'Payroll', title: 'Salary Structures', doctype: 'Salary Structure', icon: Layers3, orderBy: 'modified desc', currencyField: 'currency',
+    view: [
+      { label: 'Structure', field: 'name' },
+      { label: 'Company', field: 'company' },
+      { label: 'Frequency', field: 'payroll_frequency', type: 'kind' },
+      { label: 'Currency', field: 'currency' },
+      { label: 'Active', field: 'is_active', type: 'kind' },
+      { label: 'Modified', field: 'modified', type: 'ago' },
+    ],
+    columns: [
+      { label: 'Structure', field: 'name' },
+      { label: 'Company', field: 'company' },
+      { label: 'Frequency', field: 'payroll_frequency', type: 'kind' },
+      { label: 'Active', field: 'is_active', type: 'kind' },
+      { label: 'Modified', field: 'modified', type: 'ago' },
+    ] },
+  { key: 'salary-structure-assignment', section: 'Payroll', title: 'Structure Assignments', doctype: 'Salary Structure Assignment', icon: ClipboardCheck, orderBy: 'modified desc', currencyField: 'currency',
+    view: [
+      { label: 'Assignment', field: 'name' },
+      { label: 'Employee', field: 'employee_name' },
+      { label: 'Structure', field: 'salary_structure' },
+      { label: 'From Date', field: 'from_date', type: 'date' },
+      { label: 'Base', field: 'base', type: 'currency' },
+      { label: 'Variable', field: 'variable', type: 'currency' },
+      { label: 'Modified', field: 'modified', type: 'ago' },
+    ],
+    columns: [
+      { label: 'Assignment', field: 'name' },
+      { label: 'Employee', field: 'employee_name' },
+      { label: 'Structure', field: 'salary_structure' },
+      { label: 'From', field: 'from_date', type: 'date' },
+      { label: 'Base', field: 'base', type: 'currency' },
+      { label: 'Modified', field: 'modified', type: 'ago' },
+    ] },
   { key: 'employee', section: 'Masters', title: 'Employees', doctype: 'Employee', icon: IdCard, orderBy: 'modified desc', currencyField: '',
     view: [
       { label: 'ID', field: 'name' },
@@ -272,7 +414,7 @@ LISTS.push(
     columns: [
       { label: 'License Plate', field: 'name' },
       { label: 'Trailer', field: 'custom_trailer_plate' },
-      { label: 'Driver', field: 'custom_driver_name' },
+      { label: 'Driver', field: 'custom_driver' },
       { label: 'Transporter', field: 'custom_transporter', type: 'kind' },
       { label: 'Model', field: 'model' },
       { label: 'Modified', field: 'modified', type: 'ago' },
@@ -299,6 +441,10 @@ LISTS.push(
         COMPANY,
       ] } },
   { key: 'supplier', section: 'Masters', title: 'Suppliers', doctype: 'Supplier', icon: Factory, orderBy: 'modified desc', currencyField: 'default_currency',
+    reportTabs: [
+      { label: 'AP', report: 'ap-summary', partyType: 'Supplier' },
+      { label: 'GL', report: 'general-ledger', partyType: 'Supplier' },
+    ],
     view: [
       { label: 'Supplier', field: 'name' },
       { label: 'Type', field: 'supplier_type', type: 'kind' },

@@ -141,8 +141,22 @@ after_migrate = "kamil.setup.after_migrate"
 # performs — see kamil/customer.py.
 doc_events = {
 	"Customer": {
+		"before_insert": "kamil.customer.submit_for_approval",
 		"validate": "kamil.customer.set_verification_status",
 	},
+	# Plates are matched on constantly (vehicle names, warehouse names, transport
+	# fields on every document), so they are written the same way everywhere.
+	# A Vehicle is named after its plate, and naming happens *before* validate — so the
+	# plate has to be cleaned at before_naming or the record would be named "KDW 578Q"
+	# while its field said "KDW578Q".
+	"Vehicle": {
+		"before_naming": "kamil.vehicle.normalize_plates",
+		"validate": "kamil.vehicle.normalize_plates",
+	},
+	"Sales Order": {"validate": "kamil.vehicle.normalize_plates"},
+	"Sales Invoice": {"validate": "kamil.vehicle.normalize_plates"},
+	"Purchase Order": {"validate": "kamil.vehicle.normalize_plates"},
+	"Purchase Invoice": {"validate": "kamil.vehicle.normalize_plates"},
 }
 
 # Scheduled Tasks

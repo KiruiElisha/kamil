@@ -212,19 +212,19 @@ CUSTOMER_WORKFLOW = "Kamil Customer Approval"
 # Two steps and no more: a customer is submitted for approval, then approved. There is
 # no separate verification stage afterwards — approving *is* the verification, and the
 # KYC status is set from the paperwork itself (see kamil/customer.py).
+# A customer is raised for approval the moment it is created — there is no "draft"
+# stage anybody works in — so Pending Approval is the first state and the only actions
+# are the approver's. See kamil/customer.py for the auto-submit.
 CUSTOMER_STATES = [
-	{"state": "Draft", "doc_status": "0", "allow_edit": "Sales User", "style": "Warning"},
-	{"state": "Pending Approval", "doc_status": "0", "allow_edit": "Sales Manager", "style": "Warning"},
+	{"state": "Pending Approval", "doc_status": "0", "allow_edit": "Sales User", "style": "Warning"},
 	{"state": "Approved", "doc_status": "0", "allow_edit": "Accounts Manager", "style": "Success"},
 	{"state": "Rejected", "doc_status": "0", "allow_edit": "Sales User", "style": "Danger"},
 ]
 
 CUSTOMER_TRANSITIONS = [
-	# Step 1 — the salesperson sends it up
-	{"state": "Draft", "action": "Submit for Approval", "next_state": "Pending Approval", "allowed": "Sales User"},
-	# Step 2 — and it is approved (or sent back)
 	{"state": "Pending Approval", "action": "Approve", "next_state": "Approved", "allowed": "Accounts Manager"},
 	{"state": "Pending Approval", "action": "Reject", "next_state": "Rejected", "allowed": "Accounts Manager"},
+	# A rejected customer goes back into the queue once the salesperson has fixed it.
 	{"state": "Rejected", "action": "Resubmit", "next_state": "Pending Approval", "allowed": "Sales User"},
 ]
 
@@ -334,9 +334,43 @@ def create_purchase_workflow() -> None:
 
 
 def create_customer_workflow() -> None:
-	"""Install the Customer approval workflow, leaving an existing one alone."""
+	"""Install the Customer approval workflow, and keep our own copy up to date.
+
+	An existing workflow that somebody else built is still left alone, but the one this
+	app installed is re-synced: the states changed (the Draft step went away), and a
+	site that installed the old version would otherwise be stuck with it.
+	"""
 	# Customer has its own `disabled` flag; don't let the workflow drive `status`.
 	_install_workflow(CUSTOMER_WORKFLOW, "Customer", CUSTOMER_STATES, CUSTOMER_TRANSITIONS)
+
+	if not frappe.db.exists("Workflow", CUSTOMER_WORKFLOW):
+		return
+
+	workflow = frappe.get_doc("Workflow", CUSTOMER_WORKFLOW)
+	wanted_states = {s["state"] for s in CUSTOMER_STATES}
+	if {s.state for s in workflow.states} == wanted_states:
+		return
+
+	_ensure_workflow_masters(CUSTOMER_STATES, CUSTOMER_TRANSITIONS)
+	workflow.states = []
+	workflow.transitions = []
+	for state in CUSTOMER_STATES:
+		workflow.append("states", {"state": state["state"], "doc_status": state["doc_status"], "allow_edit": state["allow_edit"]})
+	for transition in CUSTOMER_TRANSITIONS:
+		workflow.append("transitions", {
+			"state": transition["state"],
+			"action": transition["action"],
+			"next_state": transition["next_state"],
+			"allowed": transition["allowed"],
+			"allow_self_approval": 0,
+		})
+	workflow.save(ignore_permissions=True)
+
+	# Customers sitting in the state that no longer exists move into the queue.
+	frappe.db.sql(
+		"""update `tabCustomer` set workflow_state = %s where workflow_state in ('Draft', '')""",
+		("Pending Approval",),
+	)
 
 
 # ---------------------------------------------------------------------------
