@@ -228,6 +228,14 @@ const sections = computed(() => {
   if (canRead('User')) {
     setup.push({ label: 'Users', to: '/users', icon: UsersIcon, isActive: route.name === 'Users' })
   }
+  if (canRead('Bank Transaction')) {
+    setup.push({
+      label: 'Bank Statements',
+      to: '/bank-statements',
+      icon: Landmark,
+      isActive: route.name === 'BankStatements',
+    })
+  }
   setup.push({ label: 'My Email', to: '/settings/email', icon: Mail, isActive: route.name === 'EmailSettings' })
   // Who payment approvals go to; readable by anyone, writable by a System Manager.
   setup.push({ label: 'Settings', to: '/settings/payments', icon: Settings, isActive: route.name === 'AppSettings' })
@@ -240,6 +248,7 @@ const PAGE_TITLES = {
   ChartOfAccounts: 'Chart of Accounts',
   Users: 'Users',
   EmailSettings: 'My Email',
+  BankStatements: 'Bank Statements',
   AppSettings: 'Settings',
   PaymentApproval: 'Payment Approval',
 }

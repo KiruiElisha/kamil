@@ -1,5 +1,5 @@
 <template>
-  <Dialog v-model="show" :options="{ title: config?.title || 'New', size: config?.child ? '5xl' : 'lg' }">
+  <Dialog v-model="show" :options="{ title: config?.title || 'New', size: config?.child || config?.children?.length ? '5xl' : 'lg' }">
     <template #body-content>
       <div v-if="config" class="space-y-4">
         <div v-for="(group, gi) in groups" :key="group.title || gi" class="space-y-3">
@@ -70,16 +70,17 @@
         </div>
 
         <ItemsTable
-          v-if="config.child"
-          :title="config.child.title"
-          :columns="config.child.columns"
-          :modelValue="values[config.child.fieldname]"
+          v-for="child in childConfigs"
+          :key="child.fieldname"
+          :title="child.title"
+          :columns="child.columns"
+          :modelValue="values[child.fieldname]"
           :doctype="config.doctype"
           :party="partyValue"
           :company="values.company || ''"
           :warehouse="values.set_warehouse || values.warehouse || ''"
           :currency="values.currency || ''"
-          @update:modelValue="(v) => (values[config.child.fieldname] = v)"
+          @update:modelValue="(v) => (values[child.fieldname] = v)"
         />
 
         <ErrorMessage :message="error" />
@@ -110,6 +111,10 @@ const props = defineProps({
   prefill: { type: Object, default: null },
 })
 const emit = defineEmits(['created'])
+
+// `child` is the single-table form the app started with; `children` lets a form carry
+// several (a sales order has its items *and* its sales team).
+const childConfigs = computed(() => props.config?.children || (props.config?.child ? [props.config.child] : []))
 
 const values = reactive({})
 const partyValue = computed(() => values.customer || values.supplier || values.party_name || '')
@@ -208,22 +213,37 @@ async function reset() {
     else if (SPECIAL.includes(f.default)) values[f.fieldname] = d[f.default] || ''
     else if (f.default !== undefined) values[f.fieldname] = f.default
   }
-  if (props.config.child) values[props.config.child.fieldname] = [{}]
+  for (const child of childConfigs.value) values[child.fieldname] = [{}]
 
   for (const [field, value] of Object.entries(props.prefill || {})) {
     if (value === null || value === undefined || value === '') continue
     values[field] = value
   }
-  // A mapped document brings its own lines; an empty starter row would be noise.
-  const childField = props.config.child?.fieldname
-  if (childField && Array.isArray(props.prefill?.[childField]) && props.prefill[childField].length) {
-    values[childField] = props.prefill[childField].map((row) => ({ ...row }))
+  // A mapped document brings its own rows; an empty starter row would be noise.
+  for (const child of childConfigs.value) {
+    const incoming = props.prefill?.[child.fieldname]
+    if (Array.isArray(incoming) && incoming.length) {
+      values[child.fieldname] = incoming.map((row) => ({ ...row }))
+    }
   }
 }
 
 // `immediate` matters: a dialog rendered with v-if mounts with `show` already true,
 // and a plain watcher would never fire — leaving the form blank instead of prefilled.
 watch(show, (v) => v && reset(), { immediate: true })
+
+// A field can be derived from another (payroll's end date follows its start date).
+// Recomputed whenever the source changes, and still editable afterwards.
+watch(
+  () => visibleFields.value.map((f) => (f.deriveFrom ? values[f.deriveFrom] : '')).join('|'),
+  () => {
+    for (const f of visibleFields.value) {
+      if (!f.deriveFrom || typeof f.derive !== 'function') continue
+      const source = values[f.deriveFrom]
+      if (source) values[f.fieldname] = f.derive(source, values)
+    }
+  },
+)
 // A second "Create from" while this dialog is still mounted brings new values.
 watch(() => props.prefill, () => show.value && reset())
 

@@ -55,6 +55,72 @@ _VEHICLE_MAP = {
 }
 
 
+def _fill_sales_team(doc) -> None:
+	"""Take the sales team from the customer when the document has none.
+
+	The salesperson belongs to the customer — whoever owns the account earns on it —
+	so it does not have to be picked on every order. A team entered on the document
+	itself always wins.
+	"""
+	if not doc.meta.has_field("sales_team") or doc.get("sales_team"):
+		return
+	customer = doc.get("customer")
+	if not customer:
+		return
+
+	for row in frappe.get_all(
+		"Sales Team",
+		filters={"parent": customer, "parenttype": "Customer"},
+		fields=["sales_person", "allocated_percentage", "commission_rate", "incentives"],
+	):
+		doc.append("sales_team", row)
+
+
+def _fill_taxes(doc) -> None:
+	"""Load the tax table when a document was created without one.
+
+	Taxes come from the customer's or company's default template, and each line's own
+	Item Tax Template then applies on top — which is how an invoice ends up taxed the
+	way the items say it should be, rather than not at all.
+	"""
+	if not doc.meta.has_field("taxes") or doc.get("taxes"):
+		return
+	if doc.get("taxes_and_charges"):
+		return
+
+	party_field = "customer" if doc.meta.has_field("customer") else "supplier"
+	template_doctype = "Sales Taxes and Charges Template" if party_field == "customer" else "Purchase Taxes and Charges Template"
+	if not frappe.db.exists("DocType", template_doctype):
+		return
+
+	template = None
+	party = doc.get(party_field)
+	if party:
+		# A tax category on the party picks a specific template.
+		category = frappe.db.get_value(party_field.capitalize(), party, "tax_category")
+		if category:
+			template = frappe.db.get_value(
+				template_doctype, {"company": doc.get("company"), "tax_category": category, "disabled": 0}, "name"
+			)
+	if not template:
+		template = frappe.db.get_value(
+			template_doctype, {"company": doc.get("company"), "is_default": 1, "disabled": 0}, "name"
+		)
+	if not template:
+		return
+
+	doc.taxes_and_charges = template
+	for row in frappe.get_all(
+		"Sales Taxes and Charges" if party_field == "customer" else "Purchase Taxes and Charges",
+		filters={"parent": template},
+		fields=["*"],
+		order_by="idx asc",
+	):
+		for field in ("name", "owner", "creation", "modified", "modified_by", "parent", "parentfield", "parenttype", "idx", "docstatus"):
+			row.pop(field, None)
+		doc.append("taxes", row)
+
+
 def _fill_from_vehicle(doc):
 	"""Populate plate/driver/transporter (and compartments) from `custom_vehicle`.
 
@@ -527,9 +593,46 @@ def list_open_orders(order_type: str):
 
 
 @frappe.whitelist()
-def list_modes_of_payment():
+def get_exchange_rate(from_currency: str, to_currency: str, date: str | None = None) -> dict:
+	"""Today's rate between two currencies, so the request form can suggest one."""
+	if not from_currency or not to_currency or from_currency == to_currency:
+		return {"rate": 1.0, "source": "same currency"}
+
+	try:
+		from erpnext.setup.utils import get_exchange_rate as _rate
+
+		rate = flt(_rate(from_currency, to_currency, date or nowdate(), args="for_buying"))
+		return {"rate": rate or None, "source": "Currency Exchange" if rate else "not found"}
+	except Exception:
+		return {"rate": None, "source": "not found"}
+
+
+@frappe.whitelist()
+def list_modes_of_payment(company: str | None = None) -> list:
+	"""Modes of payment, each with the account the money actually moves through.
+
+	The account's currency is what the payer is billed in, and it is often not the
+	currency on the invoice — a USD invoice paid from a KES account. The label carries
+	it so nobody has to guess which pot the money leaves.
+	"""
+	company = _resolve_company(company)
 	rows = frappe.get_list("Mode of Payment", filters={"enabled": 1}, pluck="name", order_by="name")
-	return [{"value": n, "label": n} for n in rows]
+
+	out = []
+	for name in rows:
+		account = frappe.db.get_value(
+			"Mode of Payment Account", {"parent": name, "company": company}, "default_account"
+		)
+		currency = frappe.db.get_value("Account", account, "account_currency") if account else None
+		out.append(
+			{
+				"value": name,
+				"label": f"{name} · {currency}" if currency else name,
+				"account": account,
+				"currency": currency,
+			}
+		)
+	return out
 
 
 @frappe.whitelist()
@@ -670,6 +773,15 @@ def search_link(doctype: str, txt: str = "", filters: str | dict | None = None):
 	if not isinstance(filters, dict):
 		filters = {}
 	meta = frappe.get_meta(doctype)
+
+	# A disabled record is disabled for a reason — offering it in a picker only leads to
+	# a document nobody can submit. Skipped where the caller asked for something
+	# explicit about the flag, so "show me the disabled ones" still works.
+	if meta.has_field("disabled") and "disabled" not in filters:
+		filters["disabled"] = 0
+	if meta.has_field("enabled") and "enabled" not in filters:
+		filters["enabled"] = 1
+
 	title_field = meta.title_field if meta.title_field and meta.title_field != "name" else None
 	or_filters = [["name", "like", f"%{txt}%"]]
 	if title_field:
@@ -875,6 +987,9 @@ def create_document(doctype: str, values: str | dict | None = None):
 		)
 	doc = frappe.get_doc(values)
 	_fill_from_vehicle(doc)
+	_fill_sales_team(doc)
+	if "taxes" not in values:
+		_fill_taxes(doc)
 	# No Delivery Notes or Purchase Receipts in this flow, so an invoice carries the
 	# stock movement itself. Only defaulted — a caller that passed update_stock keeps it.
 	if "update_stock" not in values:
@@ -2452,6 +2567,7 @@ def _system_notifications(limit: int = _SYSTEM_NOTIFICATION_LIMIT) -> list:
 			fields=[
 				"name",
 				"subject",
+				"email_content",
 				"type",
 				"document_type",
 				"document_name",
@@ -2475,6 +2591,7 @@ def _system_notifications(limit: int = _SYSTEM_NOTIFICATION_LIMIT) -> list:
 		{
 			"name": row.name,
 			"subject": _plain_text(row.subject),
+			"email_content": row.email_content or "",
 			"type": row.type or "Alert",
 			"doctype": row.document_type,
 			"document": row.document_name,
@@ -2640,3 +2757,122 @@ def get_current_fiscal_year(company: str | None = None) -> dict:
 
 	year = frappe.utils.getdate(nowdate()).year
 	return {"name": None, "start_date": f"{year}-01-01", "end_date": f"{year}-12-31"}
+
+# ---------------------------------------------------------------------------
+# Payroll
+# ---------------------------------------------------------------------------
+
+
+@frappe.whitelist()
+def get_payroll_actions(name: str) -> dict:
+	"""Where a payroll entry is in its run, and what can be done next.
+
+	The run is HRMS's: fill the employees, create the slips, submit them. This only
+	reports the state so the app can offer the right button.
+	"""
+	if not frappe.db.exists("DocType", "Payroll Entry"):
+		return {"supported": False}
+
+	entry = frappe.get_doc("Payroll Entry", name)
+	entry.check_permission("read")
+
+	slips = frappe.get_all(
+		"Salary Slip",
+		filters={"payroll_entry": name, "docstatus": ("<", 2)},
+		fields=["name", "docstatus", "net_pay"],
+	)
+	drafts = [s for s in slips if cint(s.docstatus) == 0]
+
+	return {
+		"supported": True,
+		"name": entry.name,
+		"docstatus": cint(entry.docstatus),
+		"status": entry.get("status"),
+		"employees": len(entry.get("employees") or []),
+		"slips": len(slips),
+		"draft_slips": len(drafts),
+		"submitted_slips": len(slips) - len(drafts),
+		"net_pay": flt(sum(flt(s.net_pay) for s in slips)),
+		"can_fill": cint(entry.docstatus) == 0,
+		"can_submit_entry": cint(entry.docstatus) == 0 and bool(entry.get("employees")),
+		"can_create_slips": cint(entry.docstatus) == 1 and not slips,
+		"can_submit_slips": bool(drafts),
+	}
+
+
+@frappe.whitelist()
+def run_payroll_action(name: str, action: str) -> dict:
+	"""Drive one step of the payroll run: employees, slips, submission.
+
+	Each step is HRMS's own method — this only routes to it, so the payroll behaves
+	exactly as it does on the desk.
+	"""
+	entry = frappe.get_doc("Payroll Entry", name)
+	entry.check_permission("write" if action != "submit_slips" else "submit")
+
+	if action == "fill_employees":
+		employees = entry.fill_employee_details()
+		entry.save()
+		return {"action": action, "employees": len(employees or entry.get("employees") or [])}
+
+	if action == "submit_entry":
+		if cint(entry.docstatus) == 0:
+			entry.submit()
+		return {"action": action, "docstatus": cint(entry.docstatus)}
+
+	if action == "create_slips":
+		if cint(entry.docstatus) != 1:
+			frappe.throw(_("Submit the payroll entry before creating salary slips."))
+		entry.create_salary_slips()
+		return {"action": action, "slips": frappe.db.count("Salary Slip", {"payroll_entry": name})}
+
+	if action == "submit_slips":
+		entry.submit_salary_slips()
+		return {
+			"action": action,
+			"submitted": frappe.db.count("Salary Slip", {"payroll_entry": name, "docstatus": 1}),
+		}
+
+	frappe.throw(_("Unknown payroll action: {0}").format(action))
+
+
+# ---------------------------------------------------------------------------
+# Assignment
+# ---------------------------------------------------------------------------
+
+
+@frappe.whitelist()
+def assign_document(doctype: str, name: str, user: str, description: str | None = None) -> dict:
+	"""Assign a document to somebody — the same ToDo the desk creates."""
+	frappe.has_permission(doctype, "read", doc=name, throw=True)
+	if not frappe.db.exists("User", user):
+		frappe.throw(_("{0} is not a user on this site.").format(user))
+
+	from frappe.desk.form.assign_to import add
+
+	add(
+		{
+			"assign_to": [user],
+			"doctype": doctype,
+			"name": name,
+			"description": description or _("Please look at {0} {1}").format(_(doctype), name),
+		}
+	)
+	return {"assigned_to": user}
+
+
+@frappe.whitelist()
+def get_assignments(doctype: str, name: str) -> list:
+	"""Who a document is currently assigned to."""
+	frappe.has_permission(doctype, "read", doc=name, throw=True)
+	rows = frappe.get_all(
+		"ToDo",
+		filters={"reference_type": doctype, "reference_name": name, "status": ("!=", "Cancelled")},
+		fields=["name", "allocated_to", "status", "description"],
+	)
+	names = {r.allocated_to for r in rows if r.allocated_to}
+	full = {u: frappe.db.get_value("User", u, "full_name") or u for u in names}
+	return [
+		{"todo": r.name, "user": r.allocated_to, "full_name": full.get(r.allocated_to), "status": r.status}
+		for r in rows
+	]

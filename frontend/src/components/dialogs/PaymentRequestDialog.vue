@@ -53,7 +53,13 @@
             An expense books a Purchase Invoice against the account you pick, then raises the
             payment request for it. Approving pays and reconciles that invoice.
           </p>
-          <LinkField label="Supplier / Payee" doctype="Supplier" :modelValue="form.supplier" @update:modelValue="(v) => (form.supplier = v)" />
+          <LinkField
+            label="Supplier / Payee"
+            doctype="Supplier"
+            :filters="{ disabled: 0 }"
+            :modelValue="form.supplier"
+            @update:modelValue="(v) => (form.supplier = v)"
+          />
           <LinkField
             label="Expense Account"
             doctype="Account"
@@ -66,16 +72,23 @@
           <LinkField label="Cost Center (optional)" doctype="Cost Center" :filters="{ is_group: 0 }" :modelValue="form.cost_center" @update:modelValue="(v) => (form.cost_center = v)" />
         </div>
 
-        <!-- Shared: how it gets paid and who approves -->
+        <!-- Shared: what will be paid, and who approves it -->
         <div class="grid grid-cols-1 gap-3 border-t border-outline-gray-1 pt-3 sm:grid-cols-2">
-          <ComboField
-            label="Mode of Payment"
-            :options="modeOptions"
-            create-doctype="Mode of Payment"
-            :modelValue="form.mode_of_payment"
-            @update:modelValue="(v) => (form.mode_of_payment = v || '')"
-            @created="loadModes"
+          <LinkField
+            label="Pay in currency"
+            doctype="Currency"
+            :modelValue="form.payment_currency"
+            @update:modelValue="onPaymentCurrency"
           />
+          <FormControl
+            v-if="needsRate"
+            type="number"
+            :label="`Exchange rate (1 ${requestCurrency} = ? ${form.payment_currency})`"
+            v-model="form.exchange_rate"
+          />
+          <div v-if="needsRate" class="text-xs text-ink-gray-5 sm:col-span-2">
+            {{ rateHint }}
+          </div>
           <ComboField
             label="Approver"
             :options="approverOptions"
@@ -133,7 +146,6 @@ const payableOptions = ref([])
 // link they cannot act on.
 const approverOptions = ref([])
 const payables = ref([])
-const modeOptions = ref([])
 
 const form = reactive({
   reference_name: '',
@@ -145,12 +157,51 @@ const form = reactive({
   paid_from: '',
   paid_to: '',
   reference_no: '',
-  mode_of_payment: '',
+  payment_currency: '',
+  exchange_rate: null,
   recipient: '',
   phone_number: '',
   via_email: true,
   via_whatsapp: true,
 })
+
+// Which account the money actually leaves, and in what currency — often not the
+// currency on the invoice (a USD invoice paid from a KES account).
+// The mode of payment — and so which account the money leaves — is the approver's
+// call, not the requester's. What the requester states is the currency it will be
+// paid in and the rate to use.
+const rateSource = ref('')
+const needsRate = computed(
+  () => !!form.payment_currency && !!requestCurrency.value && form.payment_currency !== requestCurrency.value,
+)
+const rateHint = computed(() =>
+  rateSource.value === 'Currency Exchange'
+    ? `Suggested from the latest Currency Exchange record — change it if the bank used another rate.`
+    : `No rate on file for ${requestCurrency.value} to ${form.payment_currency} — enter the one the bank will use.`,
+)
+
+async function onPaymentCurrency(value) {
+  form.payment_currency = value || ''
+  rateSource.value = ''
+  if (!needsRate.value) {
+    form.exchange_rate = null
+    return
+  }
+  try {
+    const res = await call('kamil.api.get_exchange_rate', {
+      from_currency: requestCurrency.value,
+      to_currency: form.payment_currency,
+    })
+    rateSource.value = res?.source || ''
+    if (res?.rate) form.exchange_rate = res.rate
+  } catch (e) {
+    /* the rate can still be typed in */
+  }
+}
+const requestCurrency = computed(() => selectedPayable.value?.currency || defaultCurrency())
+const currencyMismatch = computed(
+  () => !!payingFrom.value && !!requestCurrency.value && payingFrom.value.currency !== requestCurrency.value,
+)
 
 const selectedPayable = computed(() => payables.value.find((p) => p.value === form.reference_name) || null)
 
@@ -165,7 +216,8 @@ function reset() {
     paid_from: '',
     paid_to: '',
     reference_no: '',
-    mode_of_payment: '',
+    payment_currency: '',
+    exchange_rate: null,
     recipient: '',
     phone_number: '',
     via_email: true,
@@ -213,19 +265,10 @@ async function loadApprover() {
   }
 }
 
-async function loadModes() {
-  try {
-    modeOptions.value = (await call('kamil.api.list_modes_of_payment')) || []
-  } catch (e) {
-    modeOptions.value = []
-  }
-}
-
 watch(show, (v) => {
   if (!v) return
   reset()
   loadPayables()
-  loadModes()
   loadApprover()
   loadApprovers()
 })
@@ -275,7 +318,6 @@ async function submit() {
         paid_from: form.paid_from,
         paid_to: form.paid_to,
         amount: form.amount,
-        mode_of_payment: form.mode_of_payment || null,
         reference_no: form.reference_no || null,
         remarks: form.description || null,
       })
@@ -285,9 +327,10 @@ async function submit() {
         reference_doctype: refType.value,
         reference_name: form.reference_name,
         amount: form.amount || null,
-        mode_of_payment: form.mode_of_payment || null,
         recipient: form.recipient || null,
         phone_number: form.phone_number || null,
+        payment_currency: form.payment_currency || null,
+        exchange_rate: form.exchange_rate || null,
       })
     } else {
       if (!form.supplier) throw new Error('Pick the supplier or payee.')
@@ -299,10 +342,11 @@ async function submit() {
         expense_account: form.expense_account,
         amount: form.amount,
         description: form.description || null,
-        mode_of_payment: form.mode_of_payment || null,
         cost_center: form.cost_center || null,
         recipient: form.recipient || null,
         phone_number: form.phone_number || null,
+        payment_currency: form.payment_currency || null,
+        exchange_rate: form.exchange_rate || null,
       })
     }
 

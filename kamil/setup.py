@@ -136,6 +136,32 @@ CUSTOM_FIELDS = {
 		},
 	],
 	"Payment Request": [
+		# ERPNext keeps `currency` read-only and takes it from the invoice, and has no
+		# exchange rate at all — the rate is read off the reference document when the
+		# payment entry is built. Kamil pays USD invoices out of KES accounts, so the
+		# requester states what will actually be paid and at what rate.
+		{
+			"fieldname": "kamil_payment_section",
+			"label": "Payment Currency",
+			"fieldtype": "Section Break",
+			"insert_after": "currency",
+		},
+		{
+			"fieldname": "kamil_payment_currency",
+			"label": "Pay in Currency",
+			"fieldtype": "Link",
+			"options": "Currency",
+			"insert_after": "kamil_payment_section",
+			"description": "The currency the money will actually leave in. Defaults to the invoice's own.",
+		},
+		{
+			"fieldname": "kamil_exchange_rate",
+			"label": "Exchange Rate",
+			"fieldtype": "Float",
+			"precision": "9",
+			"insert_after": "kamil_payment_currency",
+			"description": "How many units of the paying currency to one unit of the invoice currency.",
+		},
 		{
 			"fieldname": "kamil_expense_section",
 			"label": "Expense",

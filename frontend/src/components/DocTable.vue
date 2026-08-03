@@ -37,7 +37,16 @@
         @update:modelValue="onStatus"
       />
       <Badge v-if="statusList.length > 1" theme="orange" :label="statusList.join(' or ')" />
-      <Button v-if="search || statusValue" label="Clear" @click="clearFilters" />
+      <!-- Disabled records are hidden by default: they are usually noise, but they
+           still have to be findable to be re-enabled. -->
+      <FormControl
+        v-if="hasDisabledFlag"
+        type="checkbox"
+        label="Show disabled"
+        :modelValue="showDisabled"
+        @update:modelValue="onShowDisabled"
+      />
+      <Button v-if="search || statusValue || showDisabled" label="Clear" @click="clearFilters" />
     </div>
 
     <!-- Pull-to-refresh indicator (mobile) -->
@@ -148,7 +157,7 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { Button, Badge, ListView, Spinner, TextInput, createListResource, call, debounce } from 'frappe-ui'
+import { Button, Badge, FormControl, ListView, Spinner, TextInput, createListResource, call, debounce } from 'frappe-ui'
 import Plus from '~icons/lucide/plus'
 import ArrowDown from '~icons/lucide/arrow-down'
 import CreateDialog from '@/components/dialogs/CreateDialog.vue'
@@ -284,6 +293,10 @@ const search = ref('')
 // in which case we filter on all of them so the list matches the count that was clicked.
 const statusValue = ref(String(route.query.status || ''))
 const statusOptions = ref([])
+// Whether this doctype even has the flag — asked once, from the same metadata the
+// forms use.
+const hasDisabledFlag = ref(false)
+const showDisabled = ref(false)
 const statusList = computed(() => statusValue.value.split(',').map((s) => s.trim()).filter(Boolean))
 // The dropdown can only represent a single selection.
 const comboStatus = computed(() => (statusList.value.length === 1 ? statusList.value[0] : ''))
@@ -295,7 +308,21 @@ async function loadStatuses() {
     statusOptions.value = []
   }
 }
+async function loadDisabledFlag() {
+  try {
+    const meta = await call('kamil.api.get_form_field_meta', {
+      doctype: props.doctype,
+      fieldnames: JSON.stringify(['disabled']),
+    })
+    hasDisabledFlag.value = !!meta?.disabled
+    if (hasDisabledFlag.value) applyFilters()
+  } catch (e) {
+    hasDisabledFlag.value = false
+  }
+}
+
 onMounted(() => {
+  loadDisabledFlag()
   loadStatuses()
   // A deep-linked status has to be pushed into the resource, which was created
   // before we looked at the query string.
@@ -315,6 +342,7 @@ watch(
 
 function applyFilters() {
   const f = { ...props.filters }
+  if (hasDisabledFlag.value && !showDisabled.value) f.disabled = 0
   if (statusList.value.length === 1) f.status = statusList.value[0]
   else if (statusList.value.length > 1) f.status = ['in', statusList.value]
   list.filters = f
@@ -342,6 +370,12 @@ function onStatus(v) {
 function clearFilters() {
   search.value = ''
   statusValue.value = ''
+  showDisabled.value = false
+  applyFilters()
+}
+
+function onShowDisabled(value) {
+  showDisabled.value = !!value
   applyFilters()
 }
 

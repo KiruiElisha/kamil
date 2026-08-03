@@ -153,6 +153,9 @@ doc_events = {
 		"before_naming": "kamil.vehicle.normalize_plates",
 		"validate": "kamil.vehicle.normalize_plates",
 	},
+	# Frappe raises a ToDo for every assignment, wherever it was made, so this is what
+	# lets the app WhatsApp the assignee even when the desk did the assigning.
+	"ToDo": {"after_insert": "kamil.assignment.notify_assignment"},
 	"Sales Order": {"validate": "kamil.vehicle.normalize_plates"},
 	"Sales Invoice": {"validate": "kamil.vehicle.normalize_plates"},
 	"Purchase Order": {"validate": "kamil.vehicle.normalize_plates"},
@@ -161,6 +164,11 @@ doc_events = {
 
 # Scheduled Tasks
 # ---------------
+
+scheduler_events = {
+	# Unverified customers are a compliance problem once they are a month old.
+	"daily": ["kamil.customer.notify_pending_verification"],
+}
 
 # scheduler_events = {
 # 	"all": [

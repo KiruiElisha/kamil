@@ -61,6 +61,31 @@
         </div>
       </div>
 
+      <div v-if="pr.attachments?.length || pr.reference_name" class="rounded-xl border border-outline-gray-1 bg-surface-white p-4">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="text-xs uppercase tracking-wide text-ink-gray-4">What this is for</div>
+          <Button
+            v-if="!pr.attachments?.length"
+            :loading="fetchingPrint"
+            label="Attach the invoice"
+            @click="fetchPrint"
+          />
+        </div>
+        <div v-if="printError" class="mt-2 text-xs text-red-600">{{ printError }}</div>
+        <div class="mt-2 flex flex-wrap gap-2">
+          <a
+            v-for="a in pr.attachments"
+            :key="a.file_url"
+            :href="a.file_url"
+            target="_blank"
+            rel="noopener"
+            class="flex items-center gap-1 rounded-lg border border-outline-gray-2 bg-surface-gray-1 px-2 py-1 text-xs text-ink-blue-3 hover:underline"
+          >
+            {{ a.file_name }}
+          </a>
+        </div>
+      </div>
+
       <div v-if="pr.message" class="rounded-lg border border-outline-gray-1 bg-surface-gray-1 p-3 text-sm text-ink-gray-7">
         {{ pr.message }}
       </div>
@@ -130,6 +155,21 @@
             @update:modelValue="(v) => (mode = v || '')"
             @created="loadModes"
           />
+          <div v-if="pr.payment_currency" class="rounded-lg border border-outline-gray-1 bg-surface-gray-1 p-2 text-xs text-ink-gray-7">
+            Requested to be paid in <span class="font-medium">{{ pr.payment_currency }}</span>
+            <span v-if="pr.exchange_rate">
+              at <span class="font-medium">{{ pr.exchange_rate }}</span>
+              per {{ pr.currency }} — about
+              <span class="font-medium tabular-nums">
+                {{ money(pr.grand_total * pr.exchange_rate, pr.payment_currency) }}
+              </span>
+            </span>
+          </div>
+          <div v-if="pr.payment_account" class="text-xs" :class="payCurrencyMismatch ? 'text-amber-700' : 'text-ink-gray-5'">
+            Paying from <span class="font-medium">{{ pr.payment_account }}</span>
+            <span v-if="pr.payment_account_currency"> in <span class="font-medium">{{ pr.payment_account_currency }}</span></span>
+            <span v-if="payCurrencyMismatch"> — this request is in {{ pr.currency }}, so the bank will convert.</span>
+          </div>
           <p class="text-xs text-ink-gray-5">
             {{
               isTransfer
@@ -214,6 +254,32 @@ const receiptOk = ref(false)
 const sendingReceipt = ref(false)
 const printFormats = ref([{ label: 'Standard', value: 'Standard' }])
 const printFormat = ref('Standard')
+
+const payCurrencyMismatch = computed(
+  () =>
+    !!pr.value?.payment_account_currency &&
+    !!pr.value?.currency &&
+    pr.value.payment_account_currency !== pr.value.currency,
+)
+
+// The print is attached in the background when the request is raised; this is the
+// way back if that render failed.
+const fetchingPrint = ref(false)
+const printError = ref('')
+
+async function fetchPrint() {
+  fetchingPrint.value = true
+  printError.value = ''
+  try {
+    const out = await call('kamil.payment_flow.build_reference_print', { name: pr.value.name })
+    if (out?.attached) await load()
+    else printError.value = out?.error || 'The document could not be rendered just now.'
+  } catch (e) {
+    printError.value = e?.messages?.join(', ') || e?.message || 'Could not attach the document.'
+  } finally {
+    fetchingPrint.value = false
+  }
+}
 
 const receiptName = computed(() => paidEntry.value || pr.value?.payment_entries?.[0] || '')
 

@@ -13,7 +13,9 @@ let inflight = null
 function load() {
   if (inflight) return inflight
 
-  const doctypes = [...new Set(LISTS.map((l) => l.doctype))]
+  // Bank Transaction is not a list in the sidebar, but the Bank Statements page is
+  // gated on it, so it has to be part of the same permission fetch.
+  const doctypes = [...new Set([...LISTS.map((l) => l.doctype), 'Bank Transaction'])]
   const reports = [...new Set(REPORTS.map((r) => r.report))]
 
   inflight = Promise.all([

@@ -102,6 +102,107 @@ def get_payment_settings() -> dict:
 	return dict(payment_settings())
 
 
+def _attach_files(doctype: str, name: str, file_urls) -> list:
+	"""Attach already-uploaded files to a document.
+
+	The approver has to see what they are paying for — the supplier's invoice, the
+	quote, the delivery note — so the request carries them rather than living in
+	somebody's inbox. Frappe allows several File rows to point at one stored file, so
+	this attaches without copying anything.
+	"""
+	if isinstance(file_urls, str):
+		try:
+			file_urls = frappe.parse_json(file_urls)
+		except Exception:
+			file_urls = [file_urls]
+	if not isinstance(file_urls, list):
+		return []
+
+	attached = []
+	for url in file_urls:
+		url = (url or "").strip()
+		if not url:
+			continue
+		try:
+			source = frappe.db.get_value("File", {"file_url": url}, ["file_name", "is_private"], as_dict=True)
+			frappe.get_doc(
+				{
+					"doctype": "File",
+					"file_url": url,
+					"file_name": (source or {}).get("file_name"),
+					"is_private": cint((source or {}).get("is_private")),
+					"attached_to_doctype": doctype,
+					"attached_to_name": name,
+				}
+			).insert(ignore_permissions=True)
+			attached.append(url)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "Kamil: attaching to payment request")
+	return attached
+
+
+def attach_reference_print(name: str) -> dict:
+	"""Attach the referenced document's print to the request.
+
+	The approver needs the invoice itself, and asking the requester to download and
+	re-upload a PDF the system can produce is busywork. Queued when the queue is up,
+	run inline when it is not — either way raising the request still succeeds.
+	"""
+	from kamil.background import enqueue_or_run
+
+	return enqueue_or_run("kamil.payment_flow.build_reference_print", name=name)
+
+
+@frappe.whitelist()
+def build_reference_print(name: str) -> dict:
+	"""Render the reference document to PDF and attach it. Safe to re-run.
+
+	Whitelisted as well as queued: PDF rendering depends on wkhtmltopdf being able to
+	fetch the site's own assets, which can fail transiently, and the approver should be
+	able to ask for the invoice again rather than being stuck without it.
+	"""
+	pr = frappe.get_doc("Payment Request", name)
+	if not (pr.reference_doctype and pr.reference_name):
+		return {"attached": False}
+
+	file_name = f"{pr.reference_name}.pdf".replace(" ", "_").replace("/", "-")
+	if frappe.db.exists(
+		"File", {"attached_to_doctype": "Payment Request", "attached_to_name": name, "file_name": file_name}
+	):
+		return {"attached": False, "reason": "already attached"}
+
+	from frappe.utils.pdf import get_pdf
+
+	html = frappe.get_print(pr.reference_doctype, pr.reference_name, no_letterhead=0)
+	try:
+		content = get_pdf(
+			html,
+			# Same options the WhatsApp attachment uses, which renders these documents
+			# fine on a server that can reach its own assets.
+			options={
+				"load-error-handling": "ignore",
+				"load-media-error-handling": "ignore",
+				"no-stop-slow-scripts": True,
+				"quiet": "",
+			},
+		)
+	except Exception as e:
+		frappe.log_error(frappe.get_traceback(), "Kamil: rendering the reference print")
+		return {"attached": False, "error": str(e)[:200]}
+
+	file_doc = frappe.get_doc(
+		{
+			"doctype": "File",
+			"file_name": file_name,
+			"content": content,
+			"is_private": 1,
+			"attached_to_doctype": "Payment Request",
+			"attached_to_name": name,
+		}
+	).insert(ignore_permissions=True)
+	return {"attached": True, "file_url": file_doc.file_url}
+
+
 def approval_url(name: str) -> str:
 	"""Deep link into the app's approval screen. Requires a login — the route is inside
 	the SPA and every action behind it re-checks permissions server-side."""
@@ -125,8 +226,17 @@ def create_payment_request(
 	phone_number: str | None = None,
 	subject: str | None = None,
 	message: str | None = None,
+	attachments: str | list | None = None,
+	payment_currency: str | None = None,
+	exchange_rate: float | str | None = None,
 ) -> dict:
-	"""Raise a Payment Request against an existing invoice or order."""
+	"""Raise a Payment Request against an existing invoice or order.
+
+	`payment_currency` and `exchange_rate` are what the money will actually leave in —
+	a USD invoice paid out of a KES account — and are applied when the payment entry is
+	built at approval. ERPNext's own `currency` stays the invoice's, read-only, as it
+	is everywhere else.
+	"""
 	if not frappe.has_permission("Payment Request", "create"):
 		frappe.throw(_("You are not allowed to raise payment requests."), frappe.PermissionError)
 	if not frappe.db.exists(reference_doctype, reference_name):
@@ -176,6 +286,11 @@ def create_payment_request(
 	if subject:
 		pr.subject = subject
 
+	if payment_currency:
+		pr.kamil_payment_currency = payment_currency
+	if exchange_rate:
+		pr.kamil_exchange_rate = flt(exchange_rate)
+
 	# make_payment_request fills `message` with ERPNext's payment-gateway template — a
 	# raw Jinja block with a "Make Payment" gateway link. The app mutes that email and
 	# sends its own approval mail, so the template is never rendered and would only
@@ -189,7 +304,15 @@ def create_payment_request(
 	pr.save()
 	pr.submit()
 
-	return {"name": pr.name, "status": pr.status, "grand_total": flt(pr.grand_total)}
+	attached = _attach_files("Payment Request", pr.name, attachments)
+	attach_reference_print(pr.name)
+
+	return {
+		"name": pr.name,
+		"status": pr.status,
+		"grand_total": flt(pr.grand_total),
+		"attachments": attached,
+	}
 
 
 @frappe.whitelist()
@@ -204,6 +327,7 @@ def create_expense_payment_request(
 	posting_date: str | None = None,
 	recipient: str | None = None,
 	phone_number: str | None = None,
+	attachments: str | list | None = None,
 ) -> dict:
 	"""Book a direct expense and raise a Payment Request to pay it.
 
@@ -265,7 +389,11 @@ def create_expense_payment_request(
 		phone_number=phone_number,
 		subject=f"Expense payment — {description[:80]}",
 		message=description,
+		attachments=attachments,
 	)
+
+	# The paperwork belongs on the invoice as well as on the request.
+	_attach_files("Purchase Invoice", invoice.name, attachments)
 
 	# Mark it as an expense so the app (and the desk) can tell the two flows apart.
 	frappe.db.set_value(
@@ -578,6 +706,13 @@ def _send_email(pr, recipient: str | None, link: str) -> dict:
 
 
 def _send_whatsapp(pr, phone_number: str | None, sender: str | None, link: str) -> dict:
+	"""Send the approval request, with the document being paid for attached.
+
+	An approver deciding on a payment wants the invoice in front of them, so the
+	reference document goes out as a PDF with the request as its caption. If the PDF
+	cannot be built the message still goes as text — a missing attachment is no reason
+	for the approver to hear nothing.
+	"""
 	if "whatsapp_integration" not in (frappe.get_installed_apps() or []):
 		return {"sent": False, "error": _("WhatsApp integration is not installed.")}
 
@@ -594,6 +729,27 @@ def _send_whatsapp(pr, phone_number: str | None, sender: str | None, link: str) 
 	text = _("Payment approval needed: {0} for {1} ({2}). Approve here: {3}").format(
 		pr.name, pr.party_name or pr.party or "", amount, link
 	)
+
+	if pr.reference_doctype and pr.reference_name:
+		try:
+			from kamil.whatsapp import send_document
+
+			result = send_document(
+				pr.reference_doctype,
+				pr.reference_name,
+				phone_number=phone_number,
+				message=text,
+				sender=sender or None,
+			)
+			if result.get("success"):
+				return {"sent": True, "to": result.get("phone_number") or phone_number, "attached": True}
+			frappe.log_error(
+				f"{pr.name}: sending {pr.reference_doctype} {pr.reference_name} failed "
+				f"({result.get('error')}); falling back to text",
+				"Kamil Payment Request WhatsApp",
+			)
+		except Exception:
+			frappe.log_error(frappe.get_traceback(), "Kamil Payment Request WhatsApp attachment")
 
 	return _whatsapp_text(phone_number, text, sender, "Kamil Payment Request WhatsApp failed")
 
@@ -729,6 +885,36 @@ def get_payment_request(name: str) -> dict:
 		"email_to": pr.email_to,
 		"phone_number": pr.phone_number,
 		"payment_entries": [row.parent for row in existing],
+		"reference_print_attached": bool(
+			frappe.db.exists(
+				"File",
+				{
+					"attached_to_doctype": "Payment Request",
+					"attached_to_name": pr.name,
+					"file_name": ("like", f"%{pr.reference_name}%"),
+				},
+			)
+		)
+		if pr.reference_name
+		else False,
+		"payment_currency": pr.get("kamil_payment_currency"),
+		"exchange_rate": flt(pr.get("kamil_exchange_rate")) or None,
+		"payment_account": pr.payment_account or _mode_of_payment_account(pr.mode_of_payment, pr.company),
+		"payment_account_currency": frappe.db.get_value(
+			"Account",
+			pr.payment_account or _mode_of_payment_account(pr.mode_of_payment, pr.company),
+			"account_currency",
+		)
+		if (pr.payment_account or pr.mode_of_payment)
+		else None,
+		"attachments": [
+			{"file_name": f.file_name, "file_url": f.file_url}
+			for f in frappe.get_all(
+				"File",
+				filters={"attached_to_doctype": "Payment Request", "attached_to_name": pr.name},
+				fields=["file_name", "file_url"],
+			)
+		],
 		"can_approve": _can_approve(),
 	}
 
@@ -764,7 +950,22 @@ def approve_payment_request(name: str, mode_of_payment: str | None = None) -> di
 		if account:
 			pr.payment_account = account
 
-	entry = pr.create_payment_entry(submit=True)
+	# Built unsubmitted so the requested rate can be applied before it posts — ERPNext
+	# otherwise takes the rate off the reference document.
+	entry = pr.create_payment_entry(submit=False)
+	rate = flt(pr.get("kamil_exchange_rate"))
+	if rate:
+		company_currency = frappe.get_cached_value("Company", pr.company, "default_currency")
+		if entry.paid_from_account_currency != company_currency:
+			entry.source_exchange_rate = rate
+		if entry.paid_to_account_currency != company_currency:
+			entry.target_exchange_rate = rate
+		entry.setup_party_account_field()
+		entry.set_missing_values()
+		entry.set_amounts()
+	entry.flags.ignore_permissions = True
+	entry.save()
+	entry.submit()
 
 	pr.db_set(
 		{

@@ -221,6 +221,69 @@
           </div>
         </div>
 
+        <!-- Who is looking after this document -->
+        <div v-if="assignOpen" class="space-y-3 rounded-lg border border-outline-gray-1 bg-surface-gray-1 p-3">
+          <div class="flex flex-wrap items-center gap-2 text-sm font-semibold text-ink-gray-8">
+            <UserPlus class="h-4 w-4 text-ink-gray-6" /> Assign
+            <Badge v-for="a in assignments" :key="a.todo" theme="blue" :label="a.full_name || a.user" />
+          </div>
+          <LinkField
+            label="Assign to"
+            doctype="User"
+            :filters="{ enabled: 1 }"
+            :modelValue="assignUser"
+            @update:modelValue="(v) => (assignUser = v || '')"
+          />
+          <FormControl type="text" label="Note (optional)" placeholder="What do they need to do?" v-model="assignNote" />
+          <div v-if="assignResult" class="text-sm" :class="assignOk ? 'text-green-600' : 'text-red-600'">{{ assignResult }}</div>
+          <div class="flex justify-end gap-2">
+            <Button label="Close" @click="assignOpen = false" />
+            <Button variant="solid" label="Assign" :loading="assigning" :disabled="!assignUser" @click="assignDoc" />
+          </div>
+        </div>
+
+        <!-- The payroll run, driven by HRMS's own steps -->
+        <div v-if="payroll.supported" class="space-y-3 rounded-lg border border-outline-gray-1 bg-surface-gray-1 p-3">
+          <div class="flex flex-wrap items-center gap-2 text-sm font-semibold text-ink-gray-8">
+            <Banknote class="h-4 w-4 text-ink-gray-6" /> Payroll run
+            <Badge theme="gray" :label="`${payroll.employees} employees`" />
+            <Badge v-if="payroll.slips" theme="blue" :label="`${payroll.slips} slips`" />
+            <Badge v-if="payroll.submitted_slips" theme="green" :label="`${payroll.submitted_slips} submitted`" />
+          </div>
+          <div class="text-xs text-ink-gray-5">{{ payrollHint }}</div>
+          <div v-if="payrollResult" class="text-sm" :class="payrollOk ? 'text-green-600' : 'text-red-600'">
+            {{ payrollResult }}
+          </div>
+          <div class="flex flex-wrap justify-end gap-2">
+            <Button
+              label="Fetch employees"
+              :disabled="!payroll.can_fill"
+              :loading="payrollBusy === 'fill_employees'"
+              @click="runPayroll('fill_employees')"
+            />
+            <Button
+              label="Submit entry"
+              :disabled="!payroll.can_submit_entry"
+              :loading="payrollBusy === 'submit_entry'"
+              @click="runPayroll('submit_entry')"
+            />
+            <Button
+              label="Create salary slips"
+              :variant="payroll.can_create_slips ? 'solid' : 'subtle'"
+              :disabled="!payroll.can_create_slips"
+              :loading="payrollBusy === 'create_slips'"
+              @click="runPayroll('create_slips')"
+            />
+            <Button
+              label="Submit salary slips"
+              :variant="payroll.can_submit_slips ? 'solid' : 'subtle'"
+              :disabled="!payroll.can_submit_slips"
+              :loading="payrollBusy === 'submit_slips'"
+              @click="runPayroll('submit_slips')"
+            />
+          </div>
+        </div>
+
         <!-- Print panel -->
         <div v-if="printOpen" class="space-y-3 rounded-lg border border-outline-gray-1 bg-surface-gray-1 p-3">
           <div class="flex items-center gap-2 text-sm font-semibold text-ink-gray-8">
@@ -289,6 +352,9 @@
           <Button v-if="partyLink" label="Ledger" @click="openLedger">
             <template #prefix><BookOpen class="h-4 w-4" /></template>
           </Button>
+          <Button label="Assign" @click="toggleAssign">
+            <template #prefix><UserPlus class="h-4 w-4" /></template>
+          </Button>
           <Button label="Print" @click="printOpen = !printOpen">
             <template #prefix><Printer class="h-4 w-4" /></template>
           </Button>
@@ -333,6 +399,8 @@ import MessageCircle from '~icons/lucide/message-circle'
 import Printer from '~icons/lucide/printer'
 import Send from '~icons/lucide/send'
 import Wallet from '~icons/lucide/wallet'
+import UserPlus from '~icons/lucide/user-plus'
+import Banknote from '~icons/lucide/banknote'
 import BookOpen from '~icons/lucide/book-open'
 import Plus from '~icons/lucide/plus'
 import Ban from '~icons/lucide/ban'
@@ -414,6 +482,21 @@ const payResult = ref('')
 const payOk = ref(false)
 const payForm = reactive({ amount: null, mode_of_payment: '', reference_no: '', reference_date: '' })
 
+// Assignment — the same ToDo the desk creates, so both sides agree on who has it.
+const assignOpen = ref(false)
+const assigning = ref(false)
+const assignUser = ref('')
+const assignNote = ref('')
+const assignResult = ref('')
+const assignOk = ref(false)
+const assignments = ref([])
+
+// A payroll entry is run in steps; the server reports which are available.
+const payroll = ref({ supported: false })
+const payrollBusy = ref('')
+const payrollResult = ref('')
+const payrollOk = ref(false)
+
 const waOpen = ref(false)
 const waPhone = ref('')
 const waMessage = ref('')
@@ -432,7 +515,14 @@ const canCancel = computed(() => !!doc.value && doc.value.docstatus === 1 && act
 const isCancelled = computed(() => doc.value && doc.value.docstatus === 2)
 // Submit is offered only when nothing else governs the document. Anything under a
 // workflow has to go through its approvals instead, so the button is hidden there.
-const canSubmit = computed(() => !!doc.value && !actions.value.workflow && actions.value.can_submit)
+const canSubmit = computed(
+  () =>
+    !!doc.value &&
+    !actions.value.workflow &&
+    actions.value.can_submit &&
+    // A payroll entry is submitted from its own run panel, in order.
+    curDoctype.value !== 'Payroll Entry',
+)
 const workflowActions = computed(() => (actions.value.workflow ? actions.value.transitions || [] : []))
 const isPaymentRequest = computed(() => curDoctype.value === 'Payment Request')
 
@@ -543,6 +633,8 @@ function resetPanels() {
   error.value = ''
   actions.value = { ...EMPTY_ACTIONS }
   printOpen.value = false
+  assignOpen.value = false
+  assignResult.value = ''
   prOpen.value = false
   prResult.value = null
   payOpen.value = false
@@ -562,6 +654,7 @@ async function load() {
   doc.value = null
   try {
     doc.value = await call('frappe.client.get', { doctype: curDoctype.value, name: curName.value })
+    loadPayroll()
     try {
       actions.value = {
         ...EMPTY_ACTIONS,
@@ -704,6 +797,92 @@ async function recordPayment() {
     payResult.value = e?.messages?.join(', ') || e?.message || 'Could not prepare the payment.'
   } finally {
     paySaving.value = false
+  }
+}
+
+async function loadAssignments() {
+  try {
+    assignments.value = (await call('kamil.api.get_assignments', { doctype: curDoctype.value, name: curName.value })) || []
+  } catch (e) {
+    assignments.value = []
+  }
+}
+
+function toggleAssign() {
+  assignOpen.value = !assignOpen.value
+  if (!assignOpen.value) return
+  assignResult.value = ''
+  assignUser.value = ''
+  assignNote.value = ''
+  loadAssignments()
+}
+
+async function assignDoc() {
+  assigning.value = true
+  assignResult.value = ''
+  try {
+    await call('kamil.api.assign_document', {
+      doctype: curDoctype.value,
+      name: curName.value,
+      user: assignUser.value,
+      description: assignNote.value || null,
+    })
+    assignOk.value = true
+    assignResult.value = `Assigned to ${assignUser.value}.`
+    assignUser.value = ''
+    await loadAssignments()
+  } catch (e) {
+    assignOk.value = false
+    assignResult.value = e?.messages?.join(', ') || e?.message || 'Could not assign this document.'
+  } finally {
+    assigning.value = false
+  }
+}
+
+async function loadPayroll() {
+  if (curDoctype.value !== 'Payroll Entry') {
+    payroll.value = { supported: false }
+    return
+  }
+  try {
+    payroll.value = (await call('kamil.api.get_payroll_actions', { name: curName.value })) || { supported: false }
+  } catch (e) {
+    payroll.value = { supported: false }
+  }
+}
+
+const payrollHint = computed(() => {
+  const p = payroll.value
+  if (!p.supported) return ''
+  if (p.can_fill && !p.employees) return 'Start by fetching the employees this run covers.'
+  if (p.can_submit_entry) return `${p.employees} employees ready — submit the entry to lock the run.`
+  if (p.can_create_slips) return 'Entry submitted. Create the salary slips next.'
+  if (p.can_submit_slips) return `${p.draft_slips} draft slips waiting to be submitted.`
+  if (p.submitted_slips) return `All ${p.submitted_slips} slips submitted.`
+  return ''
+})
+
+async function runPayroll(action) {
+  payrollBusy.value = action
+  payrollResult.value = ''
+  try {
+    const out = await call('kamil.api.run_payroll_action', { name: curName.value, action })
+    payrollOk.value = true
+    payrollResult.value =
+      action === 'fill_employees'
+        ? `${out.employees} employees fetched.`
+        : action === 'submit_entry'
+          ? 'Payroll entry submitted.'
+          : action === 'create_slips'
+            ? `${out.slips} salary slips created.`
+            : `${out.submitted} salary slips submitted.`
+    emit('submitted')
+    await load()
+  } catch (e) {
+    payrollOk.value = false
+    payrollResult.value = e?.messages?.join(', ') || e?.message || 'That payroll step did not complete.'
+  } finally {
+    payrollBusy.value = ''
   }
 }
 

@@ -88,13 +88,41 @@
         </template>
       </div>
     </div>
+
+    <!-- A notification opens here rather than throwing the user into the desk -->
+    <Dialog v-model="detailOpen" :options="{ title: detail?.type || 'Notification', size: 'lg' }">
+      <template #body-content>
+        <div v-if="detail" class="space-y-3">
+          <div class="flex flex-wrap items-center gap-2">
+            <Badge :theme="badgeTheme(detail.color)" :label="detail.type" />
+            <span class="text-xs text-ink-gray-5">{{ subtitle(detail) }}</span>
+          </div>
+          <div class="text-sm font-medium text-ink-gray-8">{{ detail.subject }}</div>
+          <div
+            v-if="detail.body"
+            class="max-h-[50vh] overflow-auto rounded-lg border border-outline-gray-1 bg-surface-gray-1 p-3 text-sm text-ink-gray-7"
+            v-html="detail.body"
+          />
+          <div v-if="detail.doctype" class="text-xs text-ink-gray-5">
+            {{ detail.doctype }}<span v-if="detail.document"> · {{ detail.document }}</span>
+          </div>
+        </div>
+      </template>
+      <template #actions>
+        <div class="flex flex-wrap justify-end gap-2">
+          <Button label="Close" @click="detailOpen = false" />
+          <Button v-if="detail?.doctype && detail?.document" label="Open in app" @click="openInApp(detail)" />
+          <Button v-if="detail?.link || detail?.doctype" variant="solid" label="Open in ERPNext" @click="openInDesk(detail)" />
+        </div>
+      </template>
+    </Dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { Badge, call } from 'frappe-ui'
+import { Badge, Button, Dialog, call } from 'frappe-ui'
 import Bell from '~icons/lucide/bell'
 import Skeleton from '@/components/Skeleton.vue'
 import { findListByDoctype } from '@/data/doctypes.js'
@@ -169,8 +197,15 @@ function go(item) {
   }
 }
 
-/** A system notification points at one document, so open that document itself. */
+// A notification opens in a modal: the app is the place people work, and bouncing
+// them into the desk to read one line loses their place.
+const detailOpen = ref(false)
+const detail = ref(null)
+
 async function openNotification(n) {
+  detail.value = { ...n, body: n.email_content || '' }
+  detailOpen.value = true
+
   if (!n.read) {
     n.read = 1
     unread.value = Math.max(unread.value - 1, 0)
@@ -181,12 +216,24 @@ async function openNotification(n) {
       /* the badge is already updated; a failed flag is not worth interrupting for */
     }
   }
+}
 
+/** The app's own list for that doctype, when it has one. */
+function openInApp(n) {
+  const cfg = findListByDoctype(n.doctype)
+  detailOpen.value = false
+  open.value = false
+  if (cfg) router.push({ path: `/list/${cfg.key}` })
+  else openInDesk(n)
+}
+
+function openInDesk(n) {
   const target =
     n.link || (n.doctype && n.document
       ? `/app/${n.doctype.toLowerCase().replace(/ /g, '-')}/${encodeURIComponent(n.document)}`
       : '')
   if (!target) return
+  detailOpen.value = false
   open.value = false
   window.location.href = target
 }

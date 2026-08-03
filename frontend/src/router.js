@@ -17,6 +17,7 @@ const routes = [
   { path: '/users', name: 'Users', component: () => import('@/pages/Users.vue') },
   { path: '/settings/email', name: 'EmailSettings', component: () => import('@/pages/EmailSettings.vue') },
   { path: '/settings/payments', name: 'AppSettings', component: () => import('@/pages/AppSettings.vue') },
+  { path: '/bank-statements', name: 'BankStatements', component: () => import('@/pages/BankStatements.vue') },
 ]
 
 const router = createRouter({

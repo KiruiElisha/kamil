@@ -15,6 +15,7 @@ import Send from '~icons/lucide/send'
 import Users from '~icons/lucide/users'
 import Factory from '~icons/lucide/factory'
 import Car from '~icons/lucide/car'
+import CheckSquare from '~icons/lucide/check-square'
 import Coins from '~icons/lucide/coins'
 import Banknote from '~icons/lucide/banknote'
 import FileSpreadsheet from '~icons/lucide/file-spreadsheet'
@@ -26,6 +27,19 @@ import UserCheck from '~icons/lucide/user-check'
 export const SECTIONS = ['Selling', 'Buying', 'Inventory', 'Accounts', 'Payroll', 'Masters']
 
 const sel = (arr) => arr.map((v) => ({ label: v, value: v }))
+
+/** Last day of the month a date falls in — payroll runs to the month end.
+ *
+ * Deliberately string arithmetic rather than Date + toISOString: that converts to UTC,
+ * so a local midnight east of Greenwich lands on the previous day and July would end
+ * on the 30th.
+ */
+const monthEnd = (value) => {
+  const [year, month] = String(value || '').slice(0, 10).split('-').map(Number)
+  if (!year || !month) return ''
+  const day = new Date(year, month, 0).getDate() // day 0 of next month = last of this
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+}
 
 // Reusable header fields
 const COMPANY = { fieldname: 'company', label: 'Company', fieldtype: 'link', options: 'Company', default: 'company' }
@@ -46,27 +60,71 @@ const AMOUNT_COL = { fieldname: 'amount', label: 'Amount', fieldtype: 'amount', 
 const UOM_COL = { fieldname: 'uom', label: 'UOM', fieldtype: 'link', options: 'UOM', flex: 1 }
 const ITEM_WH_COL = { ...wh('warehouse', 'Warehouse'), flex: 1 }
 const SALES_ITEMS = { fieldname: 'items', title: 'Items', columns: [ITEM_COL, QTY_COL, UOM_COL, ITEM_WH_COL, RATE_COL, AMOUNT_COL] }
+// Who sold it and what they earn on it. ERPNext keeps this in a child table so an
+// order can be split between people; one row at 100% is the common case.
+const SALES_TEAM = {
+  fieldname: 'sales_team',
+  title: 'Sales Team',
+  columns: [
+    { fieldname: 'sales_person', label: 'Sales Person', fieldtype: 'link', options: 'Sales Person', flex: 2 },
+    { fieldname: 'allocated_percentage', label: 'Contribution %', fieldtype: 'float', flex: 1 },
+    { fieldname: 'commission_rate', label: 'Commission %', fieldtype: 'float', flex: 1 },
+    { fieldname: 'incentives', label: 'Incentives', fieldtype: 'currency', flex: 1 },
+  ],
+}
+// Declared for both the standard and the site's own commission fields; whichever the
+// site does not have is dropped before the form renders.
+const COMMISSION_FIELDS = [
+  { section: 'Commission', fieldname: 'commission_rate', label: 'Commission Rate (%)', fieldtype: 'float' },
+  { section: 'Commission', fieldname: 'custom_commissionable_margin', label: 'Commissionable Margin', fieldtype: 'currency' },
+  { section: 'Commission', fieldname: 'custom_commission', label: 'Commission', fieldtype: 'float' },
+]
+const SALARY_ROW = (fieldname, title) => ({
+  fieldname,
+  title,
+  columns: [
+    { fieldname: 'salary_component', label: 'Component', fieldtype: 'link', options: 'Salary Component', flex: 2 },
+    { fieldname: 'amount', label: 'Amount', fieldtype: 'currency', flex: 1 },
+    { fieldname: 'formula', label: 'Formula', fieldtype: 'data', flex: 2 },
+    { fieldname: 'condition', label: 'Condition', fieldtype: 'data', flex: 2 },
+  ],
+})
 const BUY_ITEMS = SALES_ITEMS
 
 export const LISTS = [
   // Selling — invoices carry the stock movement themselves (update_stock).
   { key: 'sales-order', section: 'Selling', title: 'Sales Orders', doctype: 'Sales Order', icon: ShoppingCart, orderBy: 'modified desc',
-    columns: [ { label: 'Order', field: 'name' }, { label: 'Customer', field: 'customer_name' }, { label: 'Date', field: 'transaction_date', type: 'date' }, { label: 'Status', field: 'status', type: 'status' }, { label: 'Total', field: 'grand_total', type: 'currency' }, { label: 'Currency', field: 'currency' }, { label: 'Modified', field: 'modified', type: 'ago' } ],
-    create: { doctype: 'Sales Order', title: 'New Sales Order', label: 'Order', child: SALES_ITEMS,
-      fields: [ COMPANY, CUSTOMER, { fieldname: 'delivery_date', label: 'Delivery Date', fieldtype: 'date', default: 'today' }, VEHICLE, WAREHOUSE , { fieldname: 'currency', label: 'Currency', fieldtype: 'link', options: 'Currency' } ] } },
+    view: [
+      { label: 'Order', field: 'name' },
+      { label: 'Customer', field: 'customer_name' },
+      { label: 'Date', field: 'transaction_date', type: 'date' },
+      { label: 'Delivery Date', field: 'delivery_date', type: 'date' },
+      { label: 'Status', field: 'status', type: 'status' },
+      { label: 'Total', field: 'grand_total', type: 'currency' },
+      { label: 'Currency', field: 'currency' },
+      { label: 'Vehicle', field: 'custom_vehicle' },
+      { label: 'Commission Rate', field: 'commission_rate' },
+      { label: 'Total Commission', field: 'total_commission', type: 'currency' },
+      { label: 'Modified', field: 'modified', type: 'ago' },
+    ],
+    columns: [ { label: 'Order', field: 'name' }, { label: 'Customer', field: 'customer_name' }, { label: 'Date', field: 'transaction_date', type: 'date' }, { label: 'Status', field: 'status', type: 'status' }, { label: 'Total', field: 'grand_total', type: 'currency' }, { label: 'Workflow', field: 'workflow_state', type: 'status' }, { label: 'Modified', field: 'modified', type: 'ago' } ],
+    create: { doctype: 'Sales Order', title: 'New Sales Order', label: 'Order', children: [SALES_ITEMS, SALES_TEAM],
+      // No header warehouse or currency: the lines carry the warehouse, and the
+      // currency follows the customer's price list as ERPNext derives it.
+      fields: [ COMPANY, CUSTOMER, { fieldname: 'delivery_date', label: 'Delivery Date', fieldtype: 'date', default: 'today' }, VEHICLE, ...COMMISSION_FIELDS ] } },
   { key: 'sales-invoice', section: 'Selling', title: 'Sales Invoices', doctype: 'Sales Invoice', icon: Receipt, orderBy: 'modified desc',
-    columns: [ { label: 'Invoice', field: 'name' }, { label: 'Customer', field: 'customer_name' }, { label: 'Date', field: 'posting_date', type: 'date' }, { label: 'Status', field: 'status', type: 'status' }, { label: 'Total', field: 'grand_total', type: 'currency' }, { label: 'Currency', field: 'currency' }, { label: 'Modified', field: 'modified', type: 'ago' } ],
-    create: { doctype: 'Sales Invoice', title: 'New Sales Invoice', label: 'Invoice', child: SALES_ITEMS,
-      fields: [ COMPANY, CUSTOMER, { fieldname: 'due_date', label: 'Due Date', fieldtype: 'date' }, VEHICLE, WAREHOUSE, { fieldname: 'currency', label: 'Currency', fieldtype: 'link', options: 'Currency' },
+    columns: [ { label: 'Invoice', field: 'name' }, { label: 'Customer', field: 'customer_name' }, { label: 'Date', field: 'posting_date', type: 'date' }, { label: 'Status', field: 'status', type: 'status' }, { label: 'Total', field: 'grand_total', type: 'currency' }, { label: 'Workflow', field: 'workflow_state', type: 'status' }, { label: 'Modified', field: 'modified', type: 'ago' } ],
+    create: { doctype: 'Sales Invoice', title: 'New Sales Invoice', label: 'Invoice', children: [SALES_ITEMS, SALES_TEAM],
+      fields: [ COMPANY, CUSTOMER, { fieldname: 'due_date', label: 'Due Date', fieldtype: 'date' }, VEHICLE, WAREHOUSE, { fieldname: 'currency', label: 'Currency', fieldtype: 'link', options: 'Currency' }, ...COMMISSION_FIELDS,
         { fieldname: 'custom_bol', label: 'Bill of Lading', fieldtype: 'attach' },
         { fieldname: 'update_stock', label: 'Update stock', fieldtype: 'check', default: 1 } ] } },
   // Buying
   { key: 'purchase-order', section: 'Buying', title: 'Purchase Orders', doctype: 'Purchase Order', icon: ShoppingBag, orderBy: 'modified desc',
-    columns: [ { label: 'Order', field: 'name' }, { label: 'Supplier', field: 'supplier_name' }, { label: 'Date', field: 'transaction_date', type: 'date' }, { label: 'Status', field: 'status', type: 'status' }, { label: 'Total', field: 'grand_total', type: 'currency' }, { label: 'Currency', field: 'currency' }, { label: 'Modified', field: 'modified', type: 'ago' } ],
+    columns: [ { label: 'Order', field: 'name' }, { label: 'Supplier', field: 'supplier_name' }, { label: 'Date', field: 'transaction_date', type: 'date' }, { label: 'Status', field: 'status', type: 'status' }, { label: 'Total', field: 'grand_total', type: 'currency' }, { label: 'Workflow', field: 'workflow_state', type: 'status' }, { label: 'Modified', field: 'modified', type: 'ago' } ],
     create: { doctype: 'Purchase Order', title: 'New Purchase Order', label: 'Order', child: BUY_ITEMS,
       fields: [ COMPANY, SUPPLIER, { fieldname: 'schedule_date', label: 'Required By', fieldtype: 'date', default: 'today' }, WAREHOUSE , { fieldname: 'currency', label: 'Currency', fieldtype: 'link', options: 'Currency' } ] } },
   { key: 'purchase-invoice', section: 'Buying', title: 'Purchase Invoices', doctype: 'Purchase Invoice', icon: FileText, orderBy: 'modified desc',
-    columns: [ { label: 'Invoice', field: 'name' }, { label: 'Supplier', field: 'supplier_name' }, { label: 'Bill No', field: 'bill_no' }, { label: 'Date', field: 'posting_date', type: 'date' }, { label: 'Status', field: 'status', type: 'status' }, { label: 'Total', field: 'grand_total', type: 'currency' }, { label: 'Currency', field: 'currency' }, { label: 'Modified', field: 'modified', type: 'ago' } ],
+    columns: [ { label: 'Invoice', field: 'name' }, { label: 'Supplier', field: 'supplier_name' }, { label: 'Bill No', field: 'bill_no' }, { label: 'Date', field: 'posting_date', type: 'date' }, { label: 'Status', field: 'status', type: 'status' }, { label: 'Total', field: 'grand_total', type: 'currency' }, { label: 'Workflow', field: 'workflow_state', type: 'status' }, { label: 'Modified', field: 'modified', type: 'ago' } ],
     create: { doctype: 'Purchase Invoice', title: 'New Purchase Invoice', label: 'Invoice', child: BUY_ITEMS,
       fields: [ COMPANY, SUPPLIER, WAREHOUSE, { fieldname: 'currency', label: 'Currency', fieldtype: 'link', options: 'Currency' },
         { fieldname: 'bill_no', label: 'Supplier Invoice No', fieldtype: 'data' },
@@ -282,7 +340,8 @@ LISTS.push(
         { fieldname: 'posting_date', label: 'Posting Date', fieldtype: 'date', default: 'today' },
         { fieldname: 'payroll_frequency', label: 'Frequency', fieldtype: 'select', selectOptions: sel(['Monthly', 'Fortnightly', 'Bimonthly', 'Weekly', 'Daily']), default: 'Monthly' },
         { fieldname: 'start_date', label: 'Start Date', fieldtype: 'date' },
-        { fieldname: 'end_date', label: 'End Date', fieldtype: 'date' },
+        // Filled from the start date; still editable for a run that is not a whole month.
+        { fieldname: 'end_date', label: 'End Date', fieldtype: 'date', deriveFrom: 'start_date', derive: monthEnd },
         { fieldname: 'payment_account', label: 'Payment Account', fieldtype: 'link', options: 'Account', filters: { is_group: 0 } },
         { fieldname: 'cost_center', label: 'Cost Center', fieldtype: 'link', options: 'Cost Center', filters: { is_group: 0 } },
       ] } },
@@ -306,7 +365,57 @@ LISTS.push(
       { label: 'Status', field: 'status', type: 'status' },
       { label: 'Modified', field: 'modified', type: 'ago' },
     ] },
+  { key: 'salary-component', section: 'Payroll', title: 'Salary Components', doctype: 'Salary Component', icon: Coins, orderBy: 'modified desc', currencyField: '',
+    view: [
+      { label: 'Component', field: 'name' },
+      { label: 'Abbreviation', field: 'salary_component_abbr' },
+      { label: 'Type', field: 'type', type: 'kind' },
+      { label: 'Description', field: 'description' },
+      { label: 'Condition', field: 'condition' },
+      { label: 'Formula', field: 'formula' },
+      { label: 'Amount', field: 'amount', type: 'currency' },
+      { label: 'Taxable', field: 'is_tax_applicable', type: 'kind' },
+      { label: 'By payment days', field: 'depends_on_payment_days', type: 'kind' },
+      { label: 'Disabled', field: 'disabled', type: 'kind' },
+      { label: 'Modified', field: 'modified', type: 'ago' },
+    ],
+    columns: [
+      { label: 'Component', field: 'name' },
+      { label: 'Abbr', field: 'salary_component_abbr' },
+      { label: 'Type', field: 'type', type: 'kind' },
+      { label: 'Amount', field: 'amount', type: 'currency' },
+      { label: 'Modified', field: 'modified', type: 'ago' },
+    ],
+    create: { doctype: 'Salary Component', title: 'New Salary Component', label: 'Component',
+      fields: [
+        { section: 'Component', fieldname: 'salary_component', label: 'Name', fieldtype: 'data' },
+        { section: 'Component', fieldname: 'salary_component_abbr', label: 'Abbreviation', fieldtype: 'data' },
+        { section: 'Component', fieldname: 'type', label: 'Type', fieldtype: 'select', selectOptions: sel(['Earning', 'Deduction']), default: 'Earning' },
+        { section: 'Component', fieldname: 'description', label: 'Description', fieldtype: 'textarea' },
+        // How it is worked out: a flat amount, or a formula over the other components.
+        { section: 'Amount', fieldname: 'amount_based_on_formula', label: 'Amount based on formula', fieldtype: 'check' },
+        { section: 'Amount', fieldname: 'formula', label: 'Formula', fieldtype: 'data' },
+        { section: 'Amount', fieldname: 'amount', label: 'Amount', fieldtype: 'currency' },
+        { section: 'Amount', fieldname: 'condition', label: 'Condition', fieldtype: 'data' },
+        { section: 'Treatment', fieldname: 'is_tax_applicable', label: 'Taxable', fieldtype: 'check', default: 1 },
+        { section: 'Treatment', fieldname: 'depends_on_payment_days', label: 'Pro-rate by payment days', fieldtype: 'check', default: 1 },
+        { section: 'Treatment', fieldname: 'do_not_include_in_total', label: 'Exclude from total', fieldtype: 'check' },
+        { section: 'Treatment', fieldname: 'round_to_the_nearest_integer', label: 'Round to whole numbers', fieldtype: 'check' },
+        { section: 'Treatment', fieldname: 'statistical_component', label: 'Statistical only', fieldtype: 'check' },
+        { section: 'Treatment', fieldname: 'disabled', label: 'Disabled', fieldtype: 'check' },
+      ] } },
   { key: 'salary-structure', section: 'Payroll', title: 'Salary Structures', doctype: 'Salary Structure', icon: Layers3, orderBy: 'modified desc', currencyField: 'currency',
+    create: { doctype: 'Salary Structure', title: 'New Salary Structure', label: 'Structure',
+      children: [SALARY_ROW('earnings', 'Earnings'), SALARY_ROW('deductions', 'Deductions')],
+      fields: [
+        { fieldname: '__newname', label: 'Structure Name', fieldtype: 'data' },
+        COMPANY,
+        { fieldname: 'payroll_frequency', label: 'Frequency', fieldtype: 'select', selectOptions: sel(['Monthly', 'Fortnightly', 'Bimonthly', 'Weekly', 'Daily']), default: 'Monthly' },
+        { fieldname: 'currency', label: 'Currency', fieldtype: 'link', options: 'Currency' },
+        { fieldname: 'mode_of_payment', label: 'Mode of Payment', fieldtype: 'link', options: 'Mode of Payment' },
+        { fieldname: 'payment_account', label: 'Payment Account', fieldtype: 'link', options: 'Account', filters: { is_group: 0 } },
+        { fieldname: 'is_active', label: 'Active', fieldtype: 'select', selectOptions: sel(['Yes', 'No']), default: 'Yes' },
+      ] },
     view: [
       { label: 'Structure', field: 'name' },
       { label: 'Company', field: 'company' },
@@ -335,11 +444,39 @@ LISTS.push(
     columns: [
       { label: 'Assignment', field: 'name' },
       { label: 'Employee', field: 'employee_name' },
-      { label: 'Structure', field: 'salary_structure' },
       { label: 'From', field: 'from_date', type: 'date' },
       { label: 'Base', field: 'base', type: 'currency' },
       { label: 'Modified', field: 'modified', type: 'ago' },
     ] },
+  { key: 'todo', section: 'Masters', title: 'To Do', doctype: 'ToDo', icon: CheckSquare, orderBy: 'modified desc', currencyField: '',
+    view: [
+      { label: 'ToDo', field: 'name' },
+      { label: 'Status', field: 'status', type: 'status' },
+      { label: 'Priority', field: 'priority', type: 'kind' },
+      { label: 'Allocated To', field: 'allocated_to' },
+      { label: 'Due Date', field: 'date', type: 'date' },
+      { label: 'Reference', field: 'reference_type' },
+      { label: 'Document', field: 'reference_name' },
+      { label: 'Description', field: 'description' },
+      { label: 'Modified', field: 'modified', type: 'ago' },
+    ],
+    columns: [
+      { label: 'ToDo', field: 'name' },
+      { label: 'Allocated To', field: 'allocated_to' },
+      { label: 'Priority', field: 'priority', type: 'kind' },
+      { label: 'Status', field: 'status', type: 'status' },
+      { label: 'Due', field: 'date', type: 'date' },
+      { label: 'Modified', field: 'modified', type: 'ago' },
+    ],
+    create: { doctype: 'ToDo', title: 'New To Do', label: 'To Do',
+      fields: [
+        { fieldname: 'description', label: 'What needs doing?', fieldtype: 'textarea' },
+        { fieldname: 'allocated_to', label: 'Assign to', fieldtype: 'link', options: 'User', filters: { enabled: 1 } },
+        { fieldname: 'date', label: 'Due Date', fieldtype: 'date' },
+        { fieldname: 'priority', label: 'Priority', fieldtype: 'select', selectOptions: sel(['Low', 'Medium', 'High']), default: 'Medium' },
+        { fieldname: 'reference_type', label: 'Reference Doctype', fieldtype: 'link', options: 'DocType' },
+        { fieldname: 'reference_name', label: 'Reference Name', fieldtype: 'data' },
+      ] } },
   { key: 'employee', section: 'Masters', title: 'Employees', doctype: 'Employee', icon: IdCard, orderBy: 'modified desc', currencyField: '',
     view: [
       { label: 'ID', field: 'name' },
