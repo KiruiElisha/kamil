@@ -210,6 +210,116 @@ def approval_url(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Currency
+# ---------------------------------------------------------------------------
+#
+# The requester says which currency the money will be paid in; `kamil_exchange_rate`
+# is how many units of the company's currency one unit of it is worth — ERPNext's own
+# convention for `conversion_rate` and `source_exchange_rate`, so the figure carries
+# straight through to the payment entry at approval without being flipped anywhere.
+
+
+def _company_currency(company: str | None) -> str | None:
+	return frappe.get_cached_value("Company", company, "default_currency") if company else None
+
+
+def _payable_account(company: str, currency: str) -> str | None:
+	"""A payable account held in `currency` — an expense booked in USD cannot post to a
+	KES payable, so the account has to match before the invoice is built."""
+	default = frappe.get_cached_value("Company", company, "default_payable_account")
+	if default and frappe.db.get_value("Account", default, "account_currency") == currency:
+		return default
+	return frappe.db.get_value(
+		"Account",
+		{"company": company, "account_type": "Payable", "is_group": 0, "account_currency": currency},
+		"name",
+	)
+
+
+def _party_ledger_currency(company: str, supplier: str) -> str | None:
+	"""The currency this supplier's balance is already kept in, if they have one.
+
+	ERPNext will not accept a document in another currency once a party has entries, so
+	this decides what an expense against them can be booked in.
+	"""
+	return frappe.db.get_value(
+		"GL Entry",
+		{"company": company, "party_type": "Supplier", "party": supplier, "is_cancelled": 0},
+		"account_currency",
+	)
+
+
+def _ensure_payable_account(company: str, currency: str) -> str:
+	"""The payable account for `currency`, created alongside the existing ones if the
+	company does not keep one yet.
+
+	ERPNext holds each foreign-currency supplier balance in its own account, so paying
+	in a new currency for the first time otherwise dead-ends on an accounting setup step
+	the requester cannot be expected to do. The account is made where the company's
+	other payables live, so it lands in the right place on the balance sheet.
+	"""
+	existing = _payable_account(company, currency)
+	if existing:
+		return existing
+
+	default = frappe.get_cached_value("Company", company, "default_payable_account") or frappe.db.get_value(
+		"Account", {"company": company, "account_type": "Payable", "is_group": 0}, "name"
+	)
+	parent = frappe.db.get_value("Account", default, "parent_account") if default else None
+	if not parent:
+		frappe.throw(
+			_("{0} has no payable accounts to add a {1} one beside. Set one up in the chart of accounts.").format(
+				company, currency
+			)
+		)
+
+	account = frappe.get_doc(
+		{
+			"doctype": "Account",
+			"account_name": f"Creditors {currency}",
+			"parent_account": parent,
+			"company": company,
+			"account_type": "Payable",
+			"account_currency": currency,
+			"root_type": "Liability",
+			"is_group": 0,
+		}
+	)
+	account.flags.ignore_permissions = True
+	account.insert()
+	return account.name
+
+
+def _payment_amount(pr) -> tuple[float, str] | None:
+	"""What the request comes to in the currency it will be paid in.
+
+	Only meaningful when that currency differs from the one the request itself is in
+	(a KES invoice settled in USD); returns None when there is nothing to convert or no
+	rate to convert with.
+	"""
+	currency = pr.get("kamil_payment_currency")
+	rate = flt(pr.get("kamil_exchange_rate"))
+	if not currency or not rate or currency == pr.currency:
+		return None
+	# The rate is against the company's currency, so that is the only leg we can convert.
+	if pr.currency and pr.currency != _company_currency(pr.company):
+		return None
+	return flt(pr.grand_total) / rate, currency
+
+
+def _amount_text(pr) -> str:
+	"""The amount as it should be read: the request's own figure, plus what that comes
+	to in the currency it is being paid in when the two differ."""
+	text = frappe.utils.fmt_money(flt(pr.grand_total), currency=pr.currency or None)
+	converted = _payment_amount(pr)
+	if converted:
+		text += " ({0})".format(
+			_("about {0}").format(frappe.utils.fmt_money(converted[0], currency=converted[1]))
+		)
+	return text
+
+
+# ---------------------------------------------------------------------------
 # Creating requests
 # ---------------------------------------------------------------------------
 
@@ -233,9 +343,9 @@ def create_payment_request(
 	"""Raise a Payment Request against an existing invoice or order.
 
 	`payment_currency` and `exchange_rate` are what the money will actually leave in —
-	a USD invoice paid out of a KES account — and are applied when the payment entry is
-	built at approval. ERPNext's own `currency` stays the invoice's, read-only, as it
-	is everywhere else.
+	a KES invoice settled in USD — and are applied when the payment entry is built at
+	approval. ERPNext's own `currency` stays the invoice's, because that is the currency
+	the amount is allocated against; where the two differ every screen shows both.
 	"""
 	if not frappe.has_permission("Payment Request", "create"):
 		frappe.throw(_("You are not allowed to raise payment requests."), frappe.PermissionError)
@@ -296,7 +406,7 @@ def create_payment_request(
 	# sends its own approval mail, so the template is never rendered and would only
 	# show up as markup on the approval screen. Replace it with a plain sentence.
 	pr.message = message or _("Payment of {0} requested against {1} {2}.").format(
-		frappe.utils.fmt_money(amount, currency=pr.currency or None), _(reference_doctype), reference_name
+		_amount_text(pr), _(reference_doctype), reference_name
 	)
 
 	pr.mute_email = 1  # we do our own sending, so ERPNext must not also email on submit
@@ -328,12 +438,20 @@ def create_expense_payment_request(
 	recipient: str | None = None,
 	phone_number: str | None = None,
 	attachments: str | list | None = None,
+	payment_currency: str | None = None,
+	exchange_rate: float | str | None = None,
 ) -> dict:
 	"""Book a direct expense and raise a Payment Request to pay it.
 
 	Creates a Purchase Invoice with a single description-only line carrying
 	``expense_account`` (ERPNext's way of booking an expense with no Item master), then
 	raises the Payment Request against that invoice.
+
+	An expense has no invoice dictating its currency, so `payment_currency` is the
+	currency of the whole thing: the amount is read in it, the invoice is booked in it,
+	and the request is raised in it. `exchange_rate` is the company-currency value of
+	one unit of it, and is required when the two differ — nothing here can be posted
+	without knowing what the expense is worth in the books.
 	"""
 	if not frappe.has_permission("Payment Request", "create"):
 		frappe.throw(_("You are not allowed to raise payment requests."), frappe.PermissionError)
@@ -356,6 +474,30 @@ def create_expense_payment_request(
 
 	description = (description or "").strip() or f"Expense — {expense_account}"
 
+	# The currency the requester chose is what the amount is read in, and — where the
+	# supplier's ledger allows it — what the expense is booked in too.
+	company_currency = _company_currency(company)
+	currency = (payment_currency or "").strip() or company_currency
+	rate = flt(exchange_rate)
+	if currency != company_currency and not rate:
+		frappe.throw(
+			_("Enter what one {0} is worth in {1} — an expense cannot be booked without it.").format(
+				currency, company_currency
+			)
+		)
+	if currency == company_currency:
+		rate = 1.0
+
+	# A supplier's balance lives in one currency: ERPNext refuses an invoice in any other
+	# once they have entries. In that case the expense is booked in the currency their
+	# ledger already uses and the request still goes out in the currency asked for — the
+	# payment entry converts at approval, which is where the conversion belongs.
+	book_currency = _party_ledger_currency(company, supplier) or currency
+	booked_amount = amount
+	if book_currency != currency:
+		booked_amount = amount * rate if book_currency == company_currency else amount
+	credit_to = _ensure_payable_account(company, book_currency) if book_currency != company_currency else None
+
 	invoice = frappe.get_doc(
 		{
 			"doctype": "Purchase Invoice",
@@ -363,12 +505,15 @@ def create_expense_payment_request(
 			"supplier": supplier,
 			"posting_date": posting_date or nowdate(),
 			"bill_date": posting_date or nowdate(),
+			"currency": book_currency,
+			"conversion_rate": rate if book_currency == currency else 1.0,
+			"credit_to": credit_to or None,
 			"items": [
 				{
 					"item_name": description[:140],
 					"description": description,
 					"qty": 1,
-					"rate": amount,
+					"rate": booked_amount,
 					"expense_account": expense_account,
 					"cost_center": cost_center or None,
 				}
@@ -382,7 +527,7 @@ def create_expense_payment_request(
 	request = create_payment_request(
 		reference_doctype="Purchase Invoice",
 		reference_name=invoice.name,
-		amount=amount,
+		amount=booked_amount,
 		mode_of_payment=mode_of_payment,
 		cost_center=cost_center,
 		recipient=recipient,
@@ -390,6 +535,8 @@ def create_expense_payment_request(
 		subject=f"Expense payment — {description[:80]}",
 		message=description,
 		attachments=attachments,
+		payment_currency=currency,
+		exchange_rate=rate,
 	)
 
 	# The paperwork belongs on the invoice as well as on the request.
@@ -405,6 +552,16 @@ def create_expense_payment_request(
 
 	request["purchase_invoice"] = invoice.name
 	request["expense_account"] = expense_account
+	request["currency"] = book_currency
+	request["payment_currency"] = currency
+	if book_currency != currency:
+		# Said plainly rather than left for them to notice on the list.
+		request["note"] = _("{0} is billed in {1}, so this was booked as {2} and will be paid in {3}.").format(
+			supplier,
+			book_currency,
+			frappe.utils.fmt_money(booked_amount, currency=book_currency),
+			currency,
+		)
 	return request
 
 
@@ -670,8 +827,7 @@ def send_payment_request(
 
 
 def _approval_body(pr, link: str) -> str:
-	currency = pr.currency or ""
-	amount = frappe.utils.fmt_money(pr.grand_total, currency=currency)
+	amount = _amount_text(pr)
 	return f"""<p>A payment needs your approval.</p>
 <table cellpadding="6">
   <tr><td><b>Request</b></td><td>{frappe.utils.escape_html(pr.name)}</td></tr>
@@ -725,9 +881,8 @@ def _send_whatsapp(pr, phone_number: str | None, sender: str | None, link: str) 
 	if not phone_number:
 		return {"sent": False, "error": _("No phone number to send to.")}
 
-	amount = frappe.utils.fmt_money(pr.grand_total, currency=pr.currency or "")
 	text = _("Payment approval needed: {0} for {1} ({2}). Approve here: {3}").format(
-		pr.name, pr.party_name or pr.party or "", amount, link
+		pr.name, pr.party_name or pr.party or "", _amount_text(pr), link
 	)
 
 	if pr.reference_doctype and pr.reference_name:
@@ -899,6 +1054,10 @@ def get_payment_request(name: str) -> dict:
 		else False,
 		"payment_currency": pr.get("kamil_payment_currency"),
 		"exchange_rate": flt(pr.get("kamil_exchange_rate")) or None,
+		# Pre-computed rather than left to the screen: the rate is against the company's
+		# currency, and only the server knows what that is.
+		"payment_amount": (_payment_amount(pr) or (None,))[0],
+		"company_currency": _company_currency(pr.company),
 		"payment_account": pr.payment_account or _mode_of_payment_account(pr.mode_of_payment, pr.company),
 		"payment_account_currency": frappe.db.get_value(
 			"Account",
@@ -954,11 +1113,14 @@ def approve_payment_request(name: str, mode_of_payment: str | None = None) -> di
 	# otherwise takes the rate off the reference document.
 	entry = pr.create_payment_entry(submit=False)
 	rate = flt(pr.get("kamil_exchange_rate"))
-	if rate:
-		company_currency = frappe.get_cached_value("Company", pr.company, "default_currency")
-		if entry.paid_from_account_currency != company_currency:
+	requested_currency = pr.get("kamil_payment_currency")
+	if rate and requested_currency:
+		# The rate the requester gave is for their currency only — applying it to a leg
+		# held in some other currency would post a made-up figure.
+		company_currency = _company_currency(pr.company)
+		if entry.paid_from_account_currency == requested_currency != company_currency:
 			entry.source_exchange_rate = rate
-		if entry.paid_to_account_currency != company_currency:
+		if entry.paid_to_account_currency == requested_currency != company_currency:
 			entry.target_exchange_rate = rate
 		entry.setup_party_account_field()
 		entry.set_missing_values()

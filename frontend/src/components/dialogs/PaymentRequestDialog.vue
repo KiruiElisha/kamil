@@ -19,7 +19,7 @@
               {{ money(selectedPayable.outstanding, selectedPayable.currency) }}
             </span>
           </div>
-          <FormControl type="number" label="Amount to request" v-model="form.amount" />
+          <FormControl type="number" :label="`Amount to request (${requestCurrency})`" v-model="form.amount" />
         </div>
 
         <!-- Between the company's own accounts -->
@@ -68,25 +68,31 @@
             @update:modelValue="(v) => (form.expense_account = v)"
           />
           <FormControl type="text" label="What is this for?" placeholder="e.g. Generator diesel — March" v-model="form.description" />
-          <FormControl type="number" label="Amount" v-model="form.amount" />
+          <FormControl type="number" :label="`Amount (${requestCurrency})`" v-model="form.amount" />
+          <p v-if="expenseInCompanyCurrency" class="text-xs text-ink-gray-5">
+            Booked as {{ money(expenseInCompanyCurrency, companyCurrency) }} in the accounts.
+          </p>
           <LinkField label="Cost Center (optional)" doctype="Cost Center" :filters="{ is_group: 0 }" :modelValue="form.cost_center" @update:modelValue="(v) => (form.cost_center = v)" />
         </div>
 
         <!-- Shared: what will be paid, and who approves it -->
         <div class="grid grid-cols-1 gap-3 border-t border-outline-gray-1 pt-3 sm:grid-cols-2">
+          <!-- A transfer between the company's own accounts is in whatever those accounts
+               are held in, so there is nothing to choose here. -->
           <LinkField
+            v-if="tab !== 2"
             label="Pay in currency"
             doctype="Currency"
             :modelValue="form.payment_currency"
             @update:modelValue="onPaymentCurrency"
           />
           <FormControl
-            v-if="needsRate"
+            v-if="needsRate && tab !== 2"
             type="number"
-            :label="`Exchange rate (1 ${requestCurrency} = ? ${form.payment_currency})`"
+            :label="`Exchange rate (1 ${form.payment_currency} = ? ${companyCurrency})`"
             v-model="form.exchange_rate"
           />
-          <div v-if="needsRate" class="text-xs text-ink-gray-5 sm:col-span-2">
+          <div v-if="needsRate && tab !== 2" class="text-xs text-ink-gray-5 sm:col-span-2">
             {{ rateHint }}
           </div>
           <ComboField
@@ -165,19 +171,20 @@ const form = reactive({
   via_whatsapp: true,
 })
 
-// Which account the money actually leaves, and in what currency — often not the
-// currency on the invoice (a USD invoice paid from a KES account).
 // The mode of payment — and so which account the money leaves — is the approver's
-// call, not the requester's. What the requester states is the currency it will be
-// paid in and the rate to use.
+// call, not the requester's. What the requester states is the currency it will be paid
+// in and, when that is not the company's own currency, what one unit of it is worth.
+// That is ERPNext's rate convention, so the figure carries straight into the payment
+// entry at approval.
+const companyCurrency = computed(() => defaultCurrency())
 const rateSource = ref('')
 const needsRate = computed(
-  () => !!form.payment_currency && !!requestCurrency.value && form.payment_currency !== requestCurrency.value,
+  () => !!form.payment_currency && !!companyCurrency.value && form.payment_currency !== companyCurrency.value,
 )
 const rateHint = computed(() =>
   rateSource.value === 'Currency Exchange'
-    ? `Suggested from the latest Currency Exchange record — change it if the bank used another rate.`
-    : `No rate on file for ${requestCurrency.value} to ${form.payment_currency} — enter the one the bank will use.`,
+    ? 'Suggested from the latest Currency Exchange record — change it if the bank will use another rate.'
+    : `No rate on file for ${form.payment_currency} to ${companyCurrency.value} — enter the one the bank will use.`,
 )
 
 async function onPaymentCurrency(value) {
@@ -189,8 +196,8 @@ async function onPaymentCurrency(value) {
   }
   try {
     const res = await call('kamil.api.get_exchange_rate', {
-      from_currency: requestCurrency.value,
-      to_currency: form.payment_currency,
+      from_currency: form.payment_currency,
+      to_currency: companyCurrency.value,
     })
     rateSource.value = res?.source || ''
     if (res?.rate) form.exchange_rate = res.rate
@@ -198,9 +205,10 @@ async function onPaymentCurrency(value) {
     /* the rate can still be typed in */
   }
 }
-const requestCurrency = computed(() => selectedPayable.value?.currency || defaultCurrency())
-const currencyMismatch = computed(
-  () => !!payingFrom.value && !!requestCurrency.value && payingFrom.value.currency !== requestCurrency.value,
+// What the request itself is stated in: an invoice brings its own currency, an expense
+// is booked in whatever the requester picks.
+const requestCurrency = computed(() =>
+  tab.value === 0 ? selectedPayable.value?.currency || companyCurrency.value : form.payment_currency || companyCurrency.value,
 )
 
 const selectedPayable = computed(() => payables.value.find((p) => p.value === form.reference_name) || null)
@@ -216,7 +224,9 @@ function reset() {
     paid_from: '',
     paid_to: '',
     reference_no: '',
-    payment_currency: '',
+    // The company's own currency until told otherwise — a blank picker was leaving
+    // requests with no stated currency at all.
+    payment_currency: defaultCurrency(),
     exchange_rate: null,
     recipient: '',
     phone_number: '',
@@ -274,12 +284,23 @@ watch(show, (v) => {
 })
 
 
-// Default the amount to whatever is still outstanding — the common case.
+// Default the amount to whatever is still outstanding — the common case — and the
+// currency to the invoice's own, so the request reads back in the currency it was
+// raised in rather than in the company's.
 function onInvoiceChange(v) {
   form.reference_name = v || ''
   const row = payables.value.find((p) => p.value === form.reference_name)
-  if (row) form.amount = row.outstanding
+  if (!row) return
+  form.amount = row.outstanding
+  if (row.currency) onPaymentCurrency(row.currency)
 }
+
+// An expense is entered in the chosen currency; this is what it comes to in the books.
+const expenseInCompanyCurrency = computed(() =>
+  tab.value === 1 && needsRate.value && form.amount && form.exchange_rate
+    ? Number(form.amount) * Number(form.exchange_rate)
+    : null,
+)
 
 function money(v, currency) {
   if (v === null || v === undefined) return ''
@@ -368,13 +389,16 @@ async function submit() {
     result.value = {
       ok: true,
       title: `${created.name} raised and awaiting approval.`,
-      lines: sendOut
-        ? describeSend(sendOut)
-        : [
-            created.link
-              ? `Not sent — approval link: ${created.link}`
-              : 'Not sent — share the request manually or send it later.',
-          ],
+      // The expense path says so when the supplier's ledger forced another currency.
+      lines: (created.note ? [created.note] : []).concat(
+        sendOut
+          ? describeSend(sendOut)
+          : [
+              created.link
+                ? `Not sent — approval link: ${created.link}`
+                : 'Not sent — share the request manually or send it later.',
+            ],
+      ),
     }
     emit('created')
   } catch (e) {

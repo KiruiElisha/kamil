@@ -173,6 +173,18 @@
               @update:modelValue="(v) => (prForm.mode_of_payment = v || '')"
               @created="loadModes"
             />
+            <LinkField
+              label="Pay in currency"
+              doctype="Currency"
+              :modelValue="prForm.payment_currency"
+              @update:modelValue="onPrCurrency"
+            />
+            <FormControl
+              v-if="prNeedsRate"
+              type="number"
+              :label="`Exchange rate (1 ${prForm.payment_currency} = ? ${defaultCurrency()})`"
+              v-model="prForm.exchange_rate"
+            />
             <FormControl type="text" label="Approver email" placeholder="approver@company.com" v-model="prForm.recipient" />
             <FormControl type="text" label="Approver WhatsApp (optional)" placeholder="+2547…" v-model="prForm.phone_number" />
           </div>
@@ -467,11 +479,38 @@ const prResult = ref(null)
 const prForm = reactive({
   amount: null,
   mode_of_payment: '',
+  // The currency the money will actually be paid in, and what one unit of it is worth
+  // in the company's currency — ERPNext's rate convention, so it carries into the
+  // payment entry at approval.
+  payment_currency: '',
+  exchange_rate: null,
   recipient: '',
   phone_number: '',
   via_email: true,
   via_whatsapp: false,
 })
+const prRateSource = ref('')
+const prNeedsRate = computed(
+  () => !!prForm.payment_currency && !!defaultCurrency() && prForm.payment_currency !== defaultCurrency(),
+)
+async function onPrCurrency(value) {
+  prForm.payment_currency = value || ''
+  prRateSource.value = ''
+  if (!prNeedsRate.value) {
+    prForm.exchange_rate = null
+    return
+  }
+  try {
+    const res = await call('kamil.api.get_exchange_rate', {
+      from_currency: prForm.payment_currency,
+      to_currency: defaultCurrency(),
+    })
+    prRateSource.value = res?.source || ''
+    if (res?.rate) prForm.exchange_rate = res.rate
+  } catch (e) {
+    /* the rate can still be typed in */
+  }
+}
 const modeOptions = ref([])
 
 // Receiving money against a sales invoice. Buying works the other way round — a
@@ -892,6 +931,9 @@ function togglePaymentRequest() {
   prResult.value = null
   prForm.amount = prOutstanding.value || null
   prForm.mode_of_payment = ''
+  // Starts on the document's own currency, so the request reads back in the currency it
+  // was raised in rather than in whatever the company happens to use.
+  onPrCurrency(doc.value?.[curCurrency.value] || defaultCurrency())
   if (!modeOptions.value.length) loadModes()
 }
 
@@ -904,6 +946,8 @@ async function raisePaymentRequest() {
       reference_name: curName.value,
       amount: prForm.amount || null,
       mode_of_payment: prForm.mode_of_payment || null,
+      payment_currency: prForm.payment_currency || null,
+      exchange_rate: prForm.exchange_rate || null,
       recipient: prForm.recipient || null,
       phone_number: prForm.phone_number || null,
     })

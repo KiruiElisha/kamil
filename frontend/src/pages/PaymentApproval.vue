@@ -157,11 +157,14 @@
           />
           <div v-if="pr.payment_currency" class="rounded-lg border border-outline-gray-1 bg-surface-gray-1 p-2 text-xs text-ink-gray-7">
             Requested to be paid in <span class="font-medium">{{ pr.payment_currency }}</span>
-            <span v-if="pr.exchange_rate">
+            <span v-if="pr.exchange_rate && pr.payment_currency !== pr.company_currency">
               at <span class="font-medium">{{ pr.exchange_rate }}</span>
-              per {{ pr.currency }} — about
+              {{ pr.company_currency }} per {{ pr.payment_currency }}
+            </span>
+            <span v-if="pr.payment_amount">
+              — about
               <span class="font-medium tabular-nums">
-                {{ money(pr.grand_total * pr.exchange_rate, pr.payment_currency) }}
+                {{ money(pr.payment_amount, pr.payment_currency) }}
               </span>
             </span>
           </div>
