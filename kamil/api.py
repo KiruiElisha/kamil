@@ -76,49 +76,163 @@ def _fill_sales_team(doc) -> None:
 		doc.append("sales_team", row)
 
 
+def _tax_side(doctype: str) -> tuple[str, str, str]:
+	"""(party field, template doctype, tax row doctype) for a taxable document."""
+	meta = frappe.get_meta(doctype)
+	if meta.has_field("customer"):
+		return "customer", "Sales Taxes and Charges Template", "Sales Taxes and Charges"
+	return "supplier", "Purchase Taxes and Charges Template", "Purchase Taxes and Charges"
+
+
+def _resolve_tax_template(
+	doctype: str, party: str | None, company: str | None, posting_date: str | None
+) -> tuple[str | None, str | None]:
+	"""The tax template a document should carry, and in one phrase where it came from.
+
+	Goes through ERPNext's own Tax Rule engine, so a rule written against the party's
+	tax category, their group, or the state on their address decides the answer — and
+	the app agrees with the desk instead of guessing from the tax category alone. The
+	company's default template is the fallback when no rule matches.
+	"""
+	party_field, template_doctype, _rows = _tax_side(doctype)
+	if not frappe.db.exists("DocType", template_doctype):
+		return None, None
+
+	category = None
+	if party:
+		party_type = party_field.capitalize()
+		try:
+			from erpnext.accounts.party import get_address_tax_category, set_taxes
+			from frappe.contacts.doctype.address.address import get_default_address
+
+			billing = get_default_address(party_type, party)
+			shipping = get_default_address(party_type, party, sort_key="is_shipping_address")
+			# set_taxes does not read the party's own tax category — the desk works it out
+			# first and hands it over, honouring the Accounts Settings choice of whether the
+			# billing or the shipping address overrides it. Same here, or no rule written
+			# against a category would ever match.
+			category = (
+				get_address_tax_category(
+					frappe.db.get_value(party_type, party, "tax_category"), billing, shipping
+				)
+				or None
+			)
+			template = set_taxes(
+				party,
+				party_type,
+				posting_date or nowdate(),
+				company,
+				customer_group=frappe.db.get_value("Customer", party, "customer_group")
+				if party_field == "customer"
+				else None,
+				supplier_group=frappe.db.get_value("Supplier", party, "supplier_group")
+				if party_field == "supplier"
+				else None,
+				tax_category=category,
+				billing_address=billing,
+				shipping_address=shipping,
+			)
+			if template:
+				return template, (
+					_("from the tax rule for {0}").format(category)
+					if category
+					else _("from the tax rule for {0}").format(party)
+				)
+		except Exception:
+			# A tax rule that cannot be evaluated must not stop the document being made.
+			frappe.log_error(frappe.get_traceback(), "Kamil: resolving the tax template")
+
+	# A category with no rule behind it still points at the template that carries it.
+	if category:
+		template = frappe.db.get_value(
+			template_doctype, {"company": company, "tax_category": category, "disabled": 0}, "name"
+		)
+		if template:
+			return template, _("the {0} template").format(category)
+
+	template = frappe.db.get_value(
+		template_doctype, {"company": company, "is_default": 1, "disabled": 0}, "name"
+	)
+	return template, (_("the company default") if template else None)
+
+
+def _append_tax_rows(doc, template: str) -> None:
+	"""Copy a template's tax lines onto the document.
+
+	The desk does this in the browser when the template is picked, so a document built
+	over the API carries the template name and no tax at all unless the rows are put
+	there too.
+	"""
+	_party_field, _template_doctype, row_doctype = _tax_side(doc.doctype)
+	for row in frappe.get_all(row_doctype, filters={"parent": template}, fields=["*"], order_by="idx asc"):
+		for field in (
+			"name",
+			"owner",
+			"creation",
+			"modified",
+			"modified_by",
+			"parent",
+			"parentfield",
+			"parenttype",
+			"idx",
+			"docstatus",
+		):
+			row.pop(field, None)
+		doc.append("taxes", row)
+
+
 def _fill_taxes(doc) -> None:
 	"""Load the tax table when a document was created without one.
 
-	Taxes come from the customer's or company's default template, and each line's own
-	Item Tax Template then applies on top — which is how an invoice ends up taxed the
-	way the items say it should be, rather than not at all.
+	Taxes come from whatever template the form resolved for the party (or the company's
+	default), and each line's own Item Tax Template then applies on top — which is how an
+	invoice ends up taxed the way the items say it should be, rather than not at all.
 	"""
 	if not doc.meta.has_field("taxes") or doc.get("taxes"):
 		return
-	if doc.get("taxes_and_charges"):
-		return
 
-	party_field = "customer" if doc.meta.has_field("customer") else "supplier"
-	template_doctype = "Sales Taxes and Charges Template" if party_field == "customer" else "Purchase Taxes and Charges Template"
-	if not frappe.db.exists("DocType", template_doctype):
-		return
-
-	template = None
-	party = doc.get(party_field)
-	if party:
-		# A tax category on the party picks a specific template.
-		category = frappe.db.get_value(party_field.capitalize(), party, "tax_category")
-		if category:
-			template = frappe.db.get_value(
-				template_doctype, {"company": doc.get("company"), "tax_category": category, "disabled": 0}, "name"
-			)
-	if not template:
-		template = frappe.db.get_value(
-			template_doctype, {"company": doc.get("company"), "is_default": 1, "disabled": 0}, "name"
-		)
+	# A template the caller chose is honoured as given; its rows still have to be copied.
+	template = doc.get("taxes_and_charges") or _resolve_tax_template(
+		doc.doctype,
+		doc.get(_tax_side(doc.doctype)[0]),
+		doc.get("company"),
+		doc.get("posting_date") or doc.get("transaction_date"),
+	)[0]
 	if not template:
 		return
 
 	doc.taxes_and_charges = template
-	for row in frappe.get_all(
-		"Sales Taxes and Charges" if party_field == "customer" else "Purchase Taxes and Charges",
+	_append_tax_rows(doc, template)
+
+
+@frappe.whitelist()
+def get_tax_template(
+	doctype: str, party: str | None = None, company: str | None = None, posting_date: str | None = None
+) -> dict:
+	"""What tax the form should show for this party, and where it came from.
+
+	The form asks as soon as a customer is picked, so the tax is visible before the
+	document is created rather than appearing afterwards.
+	"""
+	company = _resolve_company(company)
+	template, source = _resolve_tax_template(doctype, party, company, posting_date)
+	if not template:
+		return {"template": None, "taxes": [], "source": None}
+
+	_party_field, template_doctype, row_doctype = _tax_side(doctype)
+	rows = frappe.get_all(
+		row_doctype,
 		filters={"parent": template},
-		fields=["*"],
+		fields=["charge_type", "account_head", "description", "rate", "included_in_print_rate"],
 		order_by="idx asc",
-	):
-		for field in ("name", "owner", "creation", "modified", "modified_by", "parent", "parentfield", "parenttype", "idx", "docstatus"):
-			row.pop(field, None)
-		doc.append("taxes", row)
+	)
+	return {
+		"template": template,
+		"tax_category": frappe.db.get_value(template_doctype, template, "tax_category"),
+		"taxes": [_plain_row(r) for r in rows],
+		# Said plainly on the form, so nobody has to wonder why this template appeared.
+		"source": source,
+	}
 
 
 def _fill_from_vehicle(doc):
@@ -860,8 +974,10 @@ def get_missing_mandatory_fields(doctype: str, known: str | list | None = None) 
 		fieldtype = _FORM_FIELDTYPES.get(df.fieldtype)
 		if not fieldtype:
 			continue
-		# A field with a default needs no prompting — the document arrives with it.
-		if df.default and df.fieldtype not in ("Select",):
+		# A field with a default needs no prompting — the document arrives with it. That
+		# includes selects: a sales order's Order Type is mandatory and defaults to Sales,
+		# and asking for it only makes the form longer.
+		if df.default:
 			continue
 		out.append(
 			{

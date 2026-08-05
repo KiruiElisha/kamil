@@ -17,14 +17,14 @@
               :label="f.label"
               :filters="f.filters || {}"
               :modelValue="values[f.fieldname] || ''"
-              @update:modelValue="(v) => (values[f.fieldname] = v)"
+              @update:modelValue="(v) => onEdit(f, v)"
             />
             <ComboField
               v-else-if="f.fieldtype === 'select'"
               :label="f.label"
               :options="f.selectOptions"
               :modelValue="values[f.fieldname]"
-              @update:modelValue="(v) => (values[f.fieldname] = v)"
+              @update:modelValue="(v) => onEdit(f, v)"
             />
             <!-- Attach: a real upload. Rendering these as text boxes would only let
                  someone paste a URL, which is not what a CR12 or a licence needs. -->
@@ -65,6 +65,11 @@
               :label="f.label"
               v-model="values[f.fieldname]"
             />
+            <!-- What a fetched field resolved to, and why — a tax template that appears
+                 on its own is only trustworthy if the form says where it came from. -->
+            <p v-if="fetchHints[f.fieldname]" class="-mt-2 text-xs text-ink-gray-5 sm:col-span-2">
+              {{ fetchHints[f.fieldname] }}
+            </p>
           </template>
           </div>
         </div>
@@ -201,8 +206,47 @@ async function loadFieldMeta() {
   }
 }
 
+// Some fields are not derived in the browser but asked of the server: the tax template
+// for a customer comes out of ERPNext's tax rules, which only the server can evaluate.
+// `fetch` declares the call and which values re-trigger it.
+const fetchHints = reactive({})
+async function runFetches() {
+  for (const f of visibleFields.value) {
+    if (!f.fetch?.method) continue
+    const args = typeof f.fetch.args === 'function' ? f.fetch.args(values, props.config) : {}
+    // Nothing to ask about yet — leave whatever the user has typed alone.
+    if (f.fetch.requires && f.fetch.requires.some((k) => !values[k])) {
+      delete fetchHints[f.fieldname]
+      continue
+    }
+    try {
+      const res = await call(f.fetch.method, args)
+      const next = f.fetch.pick ? f.fetch.pick(res) : res
+      // A value the user chose themselves is not overwritten by a later fetch.
+      if (next && values[f.fieldname] !== next && !touched.has(f.fieldname)) {
+        values[f.fieldname] = next
+      }
+      const hint = f.fetch.hint ? f.fetch.hint(res, values) : ''
+      if (hint) fetchHints[f.fieldname] = hint
+      else delete fetchHints[f.fieldname]
+    } catch (e) {
+      delete fetchHints[f.fieldname]
+    }
+  }
+}
+// Fields the user has edited by hand, so a fetch never argues with them.
+const touched = new Set()
+function onEdit(f, v) {
+  values[f.fieldname] = v
+  // Only fetched fields need remembering; anything else costs nothing to record but
+  // means nothing either.
+  if (f.fetch) touched.add(f.fieldname)
+}
+
 async function reset() {
   Object.keys(values).forEach((k) => delete values[k])
+  Object.keys(fetchHints).forEach((k) => delete fetchHints[k])
+  touched.clear()
   error.value = ''
   if (!props.config) return
   loadFieldMeta()
@@ -231,6 +275,11 @@ async function reset() {
 // `immediate` matters: a dialog rendered with v-if mounts with `show` already true,
 // and a plain watcher would never fire — leaving the form blank instead of prefilled.
 watch(show, (v) => v && reset(), { immediate: true })
+watch(
+  () => visibleFields.value.flatMap((f) => f.fetch?.deps || []).map((k) => values[k]).join('|'),
+  () => runFetches(),
+)
+
 
 // A field can be derived from another (payroll's end date follows its start date).
 // Recomputed whenever the source changes, and still editable afterwards.

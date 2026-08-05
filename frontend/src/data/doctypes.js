@@ -46,6 +46,33 @@ const COMPANY = { fieldname: 'company', label: 'Company', fieldtype: 'link', opt
 const CUSTOMER = { fieldname: 'customer', label: 'Customer', fieldtype: 'link', options: 'Customer', filters: { disabled: 0 } }
 const SUPPLIER = { fieldname: 'supplier', label: 'Supplier', fieldtype: 'link', options: 'Supplier', filters: { disabled: 0 } }
 const WAREHOUSE = { fieldname: 'set_warehouse', label: 'Warehouse', fieldtype: 'link', options: 'Warehouse', default: 'warehouse', filters: { is_group: 0 } }
+// The tax template, worked out by ERPNext's tax rules from the customer's tax category,
+// their group and their address. Fetched as soon as the customer is picked so the tax is
+// visible on the form, and overridable — the picker still lists every template.
+function taxField(doctype, party) {
+  return {
+    fieldname: 'taxes_and_charges',
+    label: 'Taxes',
+    fieldtype: 'link',
+    options: doctype,
+    fetch: {
+      method: 'kamil.api.get_tax_template',
+      deps: [party, 'company'],
+      args: (v, config) => ({ doctype: config.doctype, party: v[party], company: v.company }),
+      pick: (res) => res?.template || '',
+      hint: (res) => {
+        if (!res?.template) return ''
+        const rates = (res.taxes || [])
+          .filter((t) => t.rate)
+          .map((t) => `${t.description || t.account_head} ${t.rate}%`)
+          .join(', ')
+        return [rates, res.source].filter(Boolean).join(' — ')
+      },
+    },
+  }
+}
+const SALES_TAXES = taxField('Sales Taxes and Charges Template', 'customer')
+
 // Picking a vehicle fills plate, trailer, driver, transporter, warehouse and the
 // compartment rows server-side (kamil.api._fill_from_vehicle).
 const VEHICLE = { fieldname: 'custom_vehicle', label: 'Vehicle', fieldtype: 'link', options: 'Vehicle' }
@@ -111,11 +138,11 @@ export const LISTS = [
     create: { doctype: 'Sales Order', title: 'New Sales Order', label: 'Order', children: [SALES_ITEMS, SALES_TEAM],
       // No header warehouse or currency: the lines carry the warehouse, and the
       // currency follows the customer's price list as ERPNext derives it.
-      fields: [ COMPANY, CUSTOMER, { fieldname: 'delivery_date', label: 'Delivery Date', fieldtype: 'date', default: 'today' }, VEHICLE, ...COMMISSION_FIELDS ] } },
+      fields: [ COMPANY, CUSTOMER, { fieldname: 'delivery_date', label: 'Delivery Date', fieldtype: 'date', default: 'today' }, SALES_TAXES, VEHICLE, ...COMMISSION_FIELDS ] } },
   { key: 'sales-invoice', section: 'Selling', title: 'Sales Invoices', doctype: 'Sales Invoice', icon: Receipt, orderBy: 'modified desc',
     columns: [ { label: 'Invoice', field: 'name' }, { label: 'Customer', field: 'customer_name' }, { label: 'Date', field: 'posting_date', type: 'date' }, { label: 'Status', field: 'status', type: 'status' }, { label: 'Total', field: 'grand_total', type: 'currency' }, { label: 'Workflow', field: 'workflow_state', type: 'status' }, { label: 'Modified', field: 'modified', type: 'ago' } ],
     create: { doctype: 'Sales Invoice', title: 'New Sales Invoice', label: 'Invoice', children: [SALES_ITEMS, SALES_TEAM],
-      fields: [ COMPANY, CUSTOMER, { fieldname: 'due_date', label: 'Due Date', fieldtype: 'date' }, VEHICLE, WAREHOUSE, { fieldname: 'currency', label: 'Currency', fieldtype: 'link', options: 'Currency' }, ...COMMISSION_FIELDS,
+      fields: [ COMPANY, CUSTOMER, { fieldname: 'due_date', label: 'Due Date', fieldtype: 'date' }, SALES_TAXES, VEHICLE, WAREHOUSE, { fieldname: 'currency', label: 'Currency', fieldtype: 'link', options: 'Currency' }, ...COMMISSION_FIELDS,
         { fieldname: 'custom_bol', label: 'Bill of Lading', fieldtype: 'attach' },
         { fieldname: 'update_stock', label: 'Update stock', fieldtype: 'check', default: 1 } ] } },
   // Buying
