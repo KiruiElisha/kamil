@@ -900,13 +900,64 @@ def _send_whatsapp(pr, phone_number: str | None, sender: str | None, link: str) 
 				return {"sent": True, "to": result.get("phone_number") or phone_number, "attached": True}
 			frappe.log_error(
 				f"{pr.name}: sending {pr.reference_doctype} {pr.reference_name} failed "
-				f"({result.get('error')}); falling back to text",
+				f"({result.get('error')}); trying the print already attached to the request",
 				"Kamil Payment Request WhatsApp",
 			)
 		except Exception:
 			frappe.log_error(frappe.get_traceback(), "Kamil Payment Request WhatsApp attachment")
 
+		# The document was printed and attached when the request was raised. If rendering
+		# it again just failed — a slow print format, a letterhead image that would not
+		# load — that copy is still good, and the approver should get it rather than a
+		# bare line of text.
+		attached = _attached_reference_print(pr, text, phone_number, sender)
+		if attached:
+			return attached
+
 	return _whatsapp_text(phone_number, text, sender, "Kamil Payment Request WhatsApp failed")
+
+
+def _attached_reference_print(pr, text: str, phone_number: str, sender: str | None) -> dict | None:
+	"""Send the copy of the reference document already filed against the request.
+
+	Returns None when there is nothing usable to send, so the caller can fall back to a
+	text-only message.
+	"""
+	if not pr.reference_name:
+		return None
+
+	file_row = frappe.db.get_value(
+		"File",
+		{
+			"attached_to_doctype": "Payment Request",
+			"attached_to_name": pr.name,
+			"file_name": ("like", f"%{pr.reference_name}%"),
+		},
+		["name", "file_name", "file_url", "is_private"],
+		as_dict=True,
+	)
+	if not file_row or not file_row.file_url:
+		return None
+
+	try:
+		# The gateway fetches the attachment itself, so a private file would come back
+		# to it as a login page.
+		if file_row.is_private:
+			file_doc = frappe.get_doc("File", file_row.name)
+			file_doc.is_private = 0
+			file_doc.save(ignore_permissions=True)
+			file_row.file_url = file_doc.file_url
+
+		from kamil.whatsapp import _public_base_url, send_media
+
+		result = send_media(
+			phone_number, text, f"{_public_base_url()}{file_row.file_url}", file_row.file_name, sender or None
+		)
+		if result.get("success"):
+			return {"sent": True, "to": result.get("phone_number") or phone_number, "attached": True}
+	except Exception:
+		frappe.log_error(frappe.get_traceback(), "Kamil Payment Request WhatsApp stored attachment")
+	return None
 
 
 def _whatsapp_text(phone_number: str, text: str, sender: str | None, log_title: str) -> dict:
